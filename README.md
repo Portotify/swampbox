@@ -13,6 +13,10 @@ sandbox escape.
 
 Persistence is not authority.
 
+**Controlled external-effect experiment:** SwampBox admitted an exact GitHub issue consequence, crossed the create boundary once without retry, and a later independent read found exactly one matching issue; immediate post-create verification remained uncertain.
+
+[Read the controlled GitHub effect experiment ](docs/GITHUB_EFFECT_EXPERIMENT.md)
+
 ## The inheritance scenario
 
 Agent A persists a consequence-capable task and its modeled role ends. Agent B
