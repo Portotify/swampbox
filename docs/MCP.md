@@ -2,9 +2,10 @@
 
 ## Purpose
 
-The optional local MCP server performs one narrow, deterministic computation:
-it compares a supplied consequence declaration with a proposed consequence
-using the existing modeled material fields.
+The optional MCP server performs one narrow, deterministic computation: it
+compares a supplied consequence declaration with a proposed consequence using
+the existing modeled material fields. MCP is a material-comparison surface
+outside the containment and release runtime.
 
 The server constructs the existing `ProposedConsequence` objects and calls
 `same_material_consequence(...)`. It does not invoke an actuator, admission
@@ -78,7 +79,9 @@ fields differs.
 
 A material match does not establish authorization, current authority, policy
 validity, safety, or permission to execute. It is only a report that the
-modeled material fields match.
+modeled material fields match. The tool does not expose
+`ExecutionScopedConsequenceStore` or `ReleaseBoundary`, release a contained
+consequence, or invoke an actuator.
 
 ## Determinism
 
@@ -118,8 +121,10 @@ The server uses Streamable HTTP. `mcp_server.py` selects that transport, and
 the MCP SDK defaults it to `http://127.0.0.1:8000/mcp` when no host, port, or
 path override is supplied.
 
-This repository documents local operation only; it does not provide a hosted
-endpoint.
+The repository supports local operation by default and includes guarded hosted
+transport configuration. A non-local bind requires the exact configured
+transport-security Host and Origin values. Repository code alone does not
+prove that a hosted endpoint is deployed.
 
 ## Examples
 

@@ -4,8 +4,13 @@
 
 This document describes a controlled reference experiment for one consequence
 boundary. An exact proposed GitHub issue consequence is admitted, checked
-against the exact release contract, and allowed to cross to an external
-actuator only through the demonstrated SwampBox path.
+against this experiment's exact consequence contract, and allowed to cross to
+an external actuator only through this experiment's demonstrated SwampBox
+path.
+
+> Scope: this is a separate controlled experiment path. It is not universal
+> interception and it is not the provider-neutral `ReleaseBoundary` runtime.
+> Its synthetic local admission remains specific to this experiment.
 
 This is a narrow reference experiment. It does not generalize to arbitrary
 external effects or to production containment.
@@ -37,7 +42,8 @@ exact proposed consequence
 
 The pre-create observation establishes the starting external state. It is not
 admission. In this experiment, admission is a synthetic local result and is
-not organizational authorization.
+not organizational authorization. The phrase "fresh external observation"
+below refers to an external-state read, not authority freshness.
 
 ## Experiment result
 
@@ -91,7 +97,9 @@ The create exit class is not established. Read-after-write delay may be
 possible, but it is not proven.
 
 The live runner is an explicit, manual path. This document records the frozen
-experiment result and does not provide an operational mutation command.
+experiment result and does not provide an operational mutation command. Any
+reference here to a release contract is specific to this controlled experiment
+unless explicitly stated otherwise.
 
 ## Non-claims
 

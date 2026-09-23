@@ -1,5 +1,11 @@
 # Consequence-Inheritance Experiment
 
+> Scope: this document describes the earlier legacy synthetic admission
+> experiment. `SyntheticAdmissionProvider` and the legacy
+> `SwampBoxBoundary.commit` path belong to this experiment; they are not the
+> canonical provider-neutral `ReleaseBoundary` runtime. This experiment's
+> admission model does not model the newer finite authority-freshness contract.
+
 ## Objective
 
 Show the smallest flow in which:
@@ -23,9 +29,10 @@ later consequence. A new admission result for the exact consequence is
 required before the controlled boundary may call the actuator.
 
 Here, a new admission means a new invocation of the synthetic admission
-provider for the current modeled execution attempt. This prototype does not
-model replay protection, token freshness, expiry, revocation, time-based
-validity, or broader authority-validity freshness semantics.
+provider for the current modeled execution attempt. This legacy experiment
+does not model replay protection, token freshness, expiry, revocation,
+time-based validity, or the broader authority-validity freshness semantics of
+the canonical release boundary.
 
 ```text
 artifact persistence  !=  permission persistence
@@ -55,7 +62,7 @@ It tests one narrow synthetic boundary behavior only.
 | Agent A | Runs in a simulated contained environment and creates one queued task artifact. |
 | Artifact store | Retains the artifact after Agent A ends; it does not authorize anything. |
 | Agent B | Later reads the artifact and submits a new admission request. |
-| Boundary | Checks admission and exact consequence match before calling the actuator. |
+| Boundary | The legacy boundary checks admission and exact consequence match before calling the actuator. |
 | Admission provider | Returns `ALLOW`, `HOLD`, `DENY`, or no usable result. |
 | Simulated actuator | Records a synthetic target change and performs no external I/O. |
 | Receipt sink | Records commit and non-commit outcomes. |
@@ -208,6 +215,6 @@ The narrow hypothesis fails, or the experiment is invalid, if:
 
 ## Scope
 
-The future implementation needs only an in-memory artifact store, simulated
-Agent A and Agent B flows, a deterministic provider, an exact-match boundary,
-a non-delivering actuator, a receipt sink, and the eight tests in this matrix.
+The legacy experiment needs only an in-memory artifact store, simulated Agent
+A and Agent B flows, a deterministic provider, an exact-match boundary, a
+non-delivering actuator, a receipt sink, and the eight tests in this matrix.
