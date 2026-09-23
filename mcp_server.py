@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, Literal
 
 from mcp.server import MCPServer
@@ -40,6 +41,10 @@ class ComparisonResult(BaseModel):
 
 
 TOOL_NAME = "compare_consequence_binding"
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 8000
+MCP_PATH = "/mcp"
+STATELESS_HTTP = True
 TOOL_ANNOTATIONS = ToolAnnotations(
     readOnlyHint=True,
     destructiveHint=False,
@@ -94,5 +99,40 @@ def compare_consequence_binding(
     )
 
 
+def _load_server_settings() -> dict[str, object]:
+    """Load the narrow Streamable HTTP startup contract."""
+
+    host = os.environ.get("HOST", DEFAULT_HOST)
+    raw_port = os.environ.get("PORT")
+    if raw_port is None:
+        port = DEFAULT_PORT
+    else:
+        try:
+            port = int(raw_port)
+        except ValueError as exc:
+            raise ValueError("PORT must be an integer") from exc
+        if not 1 <= port <= 65535:
+            raise ValueError("PORT must be between 1 and 65535")
+
+    return {
+        "host": host,
+        "port": port,
+        "streamable_http_path": MCP_PATH,
+        "stateless_http": STATELESS_HTTP,
+    }
+
+
+def _run_server() -> None:
+    """Run locally until the final hosted Host/Origin allowlist is known."""
+
+    settings = _load_server_settings()
+    if settings["host"] not in {"127.0.0.1", "localhost", "::1"}:
+        raise RuntimeError(
+            "FINAL HOSTNAME REQUIRED FOR TRANSPORT SECURITY: "
+            "configure explicit Host/Origin protection before non-local bind"
+        )
+    server.run("streamable-http", **settings)
+
+
 if __name__ == "__main__":
-    server.run("streamable-http")
+    _run_server()

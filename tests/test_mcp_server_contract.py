@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
+import os
 import unittest
 from unittest.mock import patch
 
 from mcp.server.mcpserver.exceptions import ToolError
 
-from mcp_server import TOOL_ANNOTATIONS, TOOL_NAME, server
+from mcp_server import (
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    MCP_PATH,
+    STATELESS_HTTP,
+    TOOL_ANNOTATIONS,
+    TOOL_NAME,
+    _load_server_settings,
+    _run_server,
+    server,
+)
 
 
 def _consequence(
@@ -57,6 +68,56 @@ class MCPServerContractTests(unittest.IsolatedAsyncioTestCase):
             {"consequence_type", "target", "payload"},
         )
         self.assertEqual(tools[0].annotations, TOOL_ANNOTATIONS)
+
+    def test_startup_defaults_preserve_local_behavior(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                _load_server_settings(),
+                {
+                    "host": DEFAULT_HOST,
+                    "port": DEFAULT_PORT,
+                    "streamable_http_path": MCP_PATH,
+                    "stateless_http": STATELESS_HTTP,
+                },
+            )
+
+    def test_startup_consumes_explicit_host_and_port(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"HOST": "0.0.0.0", "PORT": "43123"},
+            clear=True,
+        ):
+            settings = _load_server_settings()
+
+        self.assertEqual(settings["host"], "0.0.0.0")
+        self.assertEqual(settings["port"], 43123)
+        self.assertEqual(settings["streamable_http_path"], MCP_PATH)
+        self.assertEqual(settings["stateless_http"], STATELESS_HTTP)
+
+    def test_invalid_port_fails_closed(self) -> None:
+        for raw_port in ("not-an-integer", "0", "65536"):
+            with self.subTest(raw_port=raw_port):
+                with patch.dict(os.environ, {"PORT": raw_port}, clear=True):
+                    with self.assertRaises(ValueError):
+                        _load_server_settings()
+
+    def test_stateless_http_is_enabled(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            settings = _load_server_settings()
+
+        self.assertIs(settings["stateless_http"], True)
+
+    def test_nonlocal_startup_fails_closed_until_hostname_security_exists(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"HOST": "0.0.0.0", "PORT": "43123"},
+            clear=True,
+        ):
+            with patch("mcp_server.server.run") as run:
+                with self.assertRaisesRegex(RuntimeError, "FINAL HOSTNAME REQUIRED"):
+                    _run_server()
+
+        run.assert_not_called()
 
     async def test_identical_consequences_are_a_material_match(self) -> None:
         result = await self.result_for(_arguments())
