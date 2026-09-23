@@ -37,7 +37,7 @@ class ContainedConsequence:
 
     consequence_id: str
     origin_execution_id: str
-    current_execution_id: str
+    current_execution_id: str | None
     consequence_type: str
     target: str
     payload: Any
@@ -46,6 +46,11 @@ class ContainedConsequence:
 class AuthorityVerdict(str, Enum):
     ALLOW = "ALLOW"
     DENY = "DENY"
+
+
+class ExecutionState(str, Enum):
+    ACTIVE = "ACTIVE"
+    ENDED = "ENDED"
 
 
 @dataclass(frozen=True)
@@ -136,7 +141,7 @@ class ExecutionScopedConsequenceStore:
     """In-memory storage for consequences scoped to one execution at a time."""
 
     def __init__(self) -> None:
-        self._executions: set[str] = set()
+        self._executions: dict[str, ExecutionState] = {}
         self._consequences: dict[str, ContainedConsequence] = {}
         self._release_states: dict[str, ReleaseState] = {}
         self._release_in_progress: set[str] = set()
@@ -145,7 +150,33 @@ class ExecutionScopedConsequenceStore:
     def register_execution(self, execution_id: str) -> None:
         _validate_identifier(execution_id, "execution_id")
         with self._release_lock:
-            self._executions.add(execution_id)
+            current_state = self._executions.get(execution_id)
+            if current_state is ExecutionState.ENDED:
+                raise ValueError("execution has ended")
+            self._executions[execution_id] = ExecutionState.ACTIVE
+
+    def end_execution(self, execution_id: str) -> None:
+        _validate_identifier(execution_id, "execution_id")
+        with self._release_lock:
+            self._require_active_execution(execution_id)
+            for consequence_id, contained in self._consequences.items():
+                if (
+                    contained.current_execution_id == execution_id
+                    and self._release_states[consequence_id] is ReleaseState.CONTAINED
+                    and consequence_id in self._release_in_progress
+                ):
+                    raise ValueError("execution has a consequence release in progress")
+
+            self._executions[execution_id] = ExecutionState.ENDED
+            for consequence_id, contained in self._consequences.items():
+                if (
+                    contained.current_execution_id == execution_id
+                    and self._release_states[consequence_id] is ReleaseState.CONTAINED
+                ):
+                    self._consequences[consequence_id] = replace(
+                        contained,
+                        current_execution_id=None,
+                    )
 
     def submit(
         self,
@@ -156,7 +187,7 @@ class ExecutionScopedConsequenceStore:
         _validate_identifier(execution_id, "execution_id")
         _validate_identifier(consequence_id, "consequence_id")
         with self._release_lock:
-            self._require_registered_execution(execution_id)
+            self._require_active_execution(execution_id)
             if type(consequence) is not ProposedConsequence:
                 raise TypeError("consequence must be an exact ProposedConsequence")
             if consequence_id in self._consequences:
@@ -184,7 +215,7 @@ class ExecutionScopedConsequenceStore:
         _validate_identifier(execution_id, "execution_id")
         _validate_identifier(consequence_id, "consequence_id")
         with self._release_lock:
-            self._require_registered_execution(execution_id)
+            self._require_active_execution(execution_id)
             contained = self._consequences.get(consequence_id)
             if contained is None or contained.current_execution_id != execution_id:
                 raise KeyError("consequence is not visible to execution")
@@ -200,8 +231,8 @@ class ExecutionScopedConsequenceStore:
         _validate_identifier(target_execution_id, "target_execution_id")
         _validate_identifier(consequence_id, "consequence_id")
         with self._release_lock:
-            self._require_registered_execution(source_execution_id)
-            self._require_registered_execution(target_execution_id)
+            self._require_active_execution(source_execution_id)
+            self._require_active_execution(target_execution_id)
             if source_execution_id == target_execution_id:
                 raise ValueError("source and target executions must differ")
             if consequence_id not in self._consequences:
@@ -218,6 +249,44 @@ class ExecutionScopedConsequenceStore:
             )
             self._consequences[consequence_id] = transferred
             return _copy_contained_consequence(transferred)
+
+    def inspect_quarantined(self, consequence_id: str) -> ContainedConsequence:
+        _validate_identifier(consequence_id, "consequence_id")
+        with self._release_lock:
+            contained = self._consequences.get(consequence_id)
+            if (
+                contained is None
+                or self._release_states.get(consequence_id) is not ReleaseState.CONTAINED
+                or contained.current_execution_id is not None
+            ):
+                raise KeyError("consequence is not quarantined")
+            return _copy_contained_consequence(contained)
+
+    def adopt(
+        self,
+        execution_id: str,
+        consequence_id: str,
+    ) -> ContainedConsequence:
+        _validate_identifier(execution_id, "execution_id")
+        _validate_identifier(consequence_id, "consequence_id")
+        with self._release_lock:
+            self._require_active_execution(execution_id)
+            contained = self._consequences.get(consequence_id)
+            if contained is None:
+                raise KeyError("consequence does not exist")
+            if consequence_id in self._release_in_progress:
+                raise ValueError("consequence release is in progress")
+            if self._release_states[consequence_id] is not ReleaseState.CONTAINED:
+                raise ValueError("consequence is not adoptable")
+            if contained.current_execution_id is not None:
+                raise ValueError("consequence is not quarantined")
+
+            adopted = replace(
+                contained,
+                current_execution_id=execution_id,
+            )
+            self._consequences[consequence_id] = adopted
+            return _copy_contained_consequence(adopted)
 
     def release_state(self, consequence_id: str) -> ReleaseState:
         _validate_identifier(consequence_id, "consequence_id")
@@ -236,9 +305,12 @@ class ExecutionScopedConsequenceStore:
             raise KeyError("consequence is not visible to execution")
         return contained
 
-    def _require_registered_execution(self, execution_id: str) -> None:
-        if execution_id not in self._executions:
+    def _require_active_execution(self, execution_id: str) -> None:
+        state = self._executions.get(execution_id)
+        if state is None:
             raise KeyError("execution is not registered")
+        if state is not ExecutionState.ACTIVE:
+            raise KeyError("execution is not active")
 
 
 def _validate_identifier(value: str, field_name: str) -> None:
@@ -427,10 +499,10 @@ class ReleaseBoundary:
         _validate_identifier(consequence_id, "consequence_id")
 
         with self._store._release_lock:
-            try:
-                self._store._require_registered_execution(execution_id)
-            except KeyError:
+            if execution_id not in self._store._executions:
                 return self._contained_result(consequence_id, "execution_not_registered")
+            if self._store._executions[execution_id] is not ExecutionState.ACTIVE:
+                return self._contained_result(consequence_id, "execution_not_active")
 
             contained = self._store._consequences.get(consequence_id)
             if contained is None:
@@ -441,6 +513,11 @@ class ReleaseBoundary:
                 return self._contained_result(
                     consequence_id,
                     "consequence_not_releasable",
+                )
+            if contained.current_execution_id is None:
+                return self._contained_result(
+                    consequence_id,
+                    "consequence_not_in_active_custody",
                 )
             if contained.current_execution_id != execution_id:
                 return self._contained_result(consequence_id, "not_current_custodian")

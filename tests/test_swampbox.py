@@ -14,6 +14,7 @@ from reference.swampbox import (
     ArtifactStore,
     ContainedConsequence,
     ExecutionScopedConsequenceStore,
+    ExecutionState,
     PersistedArtifact,
     ProposedConsequence,
     ReceiptSink,
@@ -1261,6 +1262,338 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertEqual(first.status, ReleaseState.UNCERTAIN)
         self.assertEqual(second.reason, "consequence_not_releasable")
         self.assertEqual(len(provider.calls), 1)
+
+
+class ExecutionInheritanceBoundaryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.store = ExecutionScopedConsequenceStore()
+        for execution_id in ("execution-a", "execution-b", "execution-c"):
+            self.store.register_execution(execution_id)
+        self.consequence = ProposedConsequence(
+            "synthetic_task",
+            "target-x",
+            {"title": "content-y"},
+        )
+        self.clock = MutableClock(datetime(2026, 1, 1, 12, 0, 0))
+
+    def _submit(self, consequence_id: str = "consequence-x") -> None:
+        self.store.submit("execution-a", consequence_id, self.consequence)
+
+    def _decision(
+        self,
+        contained: ContainedConsequence,
+        evaluated_at: datetime,
+        *,
+        execution_id: str | None = None,
+    ) -> AuthorityDecision:
+        return AuthorityDecision(
+            decision_id="decision-inheritance",
+            verdict=AuthorityVerdict.ALLOW.value,
+            consequence_id=contained.consequence_id,
+            execution_id=execution_id or contained.current_execution_id,
+            bound_consequence=ProposedConsequence(
+                contained.consequence_type,
+                contained.target,
+                contained.payload,
+            ),
+            issued_at=evaluated_at,
+            valid_until=evaluated_at + timedelta(minutes=5),
+        )
+
+    def test_execution_lifecycle_is_active_then_ended_and_cannot_restart(self) -> None:
+        self.assertEqual(self.store._executions["execution-a"], ExecutionState.ACTIVE)
+
+        self.store.end_execution("execution-a")
+
+        self.assertEqual(self.store._executions["execution-a"], ExecutionState.ENDED)
+        with self.assertRaises(ValueError):
+            self.store.register_execution("execution-a")
+
+    def test_end_quarantines_contained_consequence_without_changing_origin_or_material(self) -> None:
+        self._submit()
+
+        self.store.end_execution("execution-a")
+        quarantined = self.store.inspect_quarantined("consequence-x")
+
+        self.assertEqual(quarantined.origin_execution_id, "execution-a")
+        self.assertIsNone(quarantined.current_execution_id)
+        self.assertEqual(quarantined.consequence_type, "synthetic_task")
+        self.assertEqual(quarantined.target, "target-x")
+        self.assertEqual(quarantined.payload, {"title": "content-y"})
+        with self.assertRaises(KeyError):
+            self.store.read("execution-a", "consequence-x")
+        with self.assertRaises(KeyError):
+            self.store.read("execution-b", "consequence-x")
+
+    def test_new_execution_does_not_automatically_inherit_quarantined_consequence(self) -> None:
+        self._submit()
+        self.store.end_execution("execution-a")
+
+        with self.assertRaises(KeyError):
+            self.store.read("execution-b", "consequence-x")
+
+        adopted = self.store.adopt("execution-b", "consequence-x")
+        self.assertEqual(adopted.current_execution_id, "execution-b")
+        self.assertEqual(
+            self.store.read("execution-b", "consequence-x").current_execution_id,
+            "execution-b",
+        )
+
+    def test_inspection_is_detached_and_does_not_grant_custody(self) -> None:
+        self._submit()
+        self.store.end_execution("execution-a")
+
+        inspected = self.store.inspect_quarantined("consequence-x")
+        inspected.payload["title"] = "mutated"
+
+        stored = self.store.inspect_quarantined("consequence-x")
+        self.assertIsNone(stored.current_execution_id)
+        self.assertEqual(stored.payload, {"title": "content-y"})
+        with self.assertRaises(KeyError):
+            self.store.read("execution-b", "consequence-x")
+
+    def test_adoption_is_custody_only_and_does_not_invoke_provider_or_actuator(self) -> None:
+        self._submit()
+        self.store.end_execution("execution-a")
+        provider = RecordingAuthorityProvider(self._decision)
+        actuator = RecordingReleaseActuator(ActuatorOutcome.SUCCEEDED)
+
+        adopted = self.store.adopt("execution-b", "consequence-x")
+
+        self.assertEqual(adopted.current_execution_id, "execution-b")
+        self.assertEqual(self.store.release_state("consequence-x"), ReleaseState.CONTAINED)
+        self.assertEqual(provider.calls, [])
+        self.assertEqual(actuator.calls, [])
+
+    def test_adoption_requires_active_registered_execution_and_quarantine(self) -> None:
+        self._submit()
+        self.store.end_execution("execution-a")
+        self.store.end_execution("execution-b")
+
+        with self.assertRaises(KeyError):
+            self.store.adopt("execution-unknown", "consequence-x")
+        with self.assertRaises(KeyError):
+            self.store.adopt("execution-b", "consequence-x")
+
+        with self.assertRaises(KeyError):
+            self.store.transfer("execution-a", "execution-c", "consequence-x")
+
+    def test_ended_execution_cannot_submit_read_transfer_receive_or_release(self) -> None:
+        self._submit()
+        self.store.end_execution("execution-a")
+        self.store.register_execution("execution-d")
+
+        with self.assertRaises(KeyError):
+            self.store.submit("execution-a", "new-consequence", self.consequence)
+        with self.assertRaises(KeyError):
+            self.store.read("execution-a", "consequence-x")
+        with self.assertRaises(KeyError):
+            self.store.transfer("execution-a", "execution-b", "consequence-x")
+        with self.assertRaises(KeyError):
+            self.store.transfer("execution-b", "execution-a", "consequence-x")
+
+        provider = RecordingAuthorityProvider(self._decision)
+        actuator = RecordingReleaseActuator(ActuatorOutcome.SUCCEEDED)
+        result = ReleaseBoundary(
+            self.store,
+            provider,
+            actuator,
+            self.clock,
+        ).release("execution-a", "consequence-x")
+
+        self.assertEqual(result.reason, "execution_not_active")
+        self.assertEqual(provider.calls, [])
+        self.assertEqual(actuator.calls, [])
+
+    def test_quarantined_consequence_cannot_release_before_adoption(self) -> None:
+        self._submit()
+        self.store.end_execution("execution-a")
+        provider = RecordingAuthorityProvider(self._decision)
+        actuator = RecordingReleaseActuator(ActuatorOutcome.SUCCEEDED)
+
+        result = ReleaseBoundary(
+            self.store,
+            provider,
+            actuator,
+            self.clock,
+        ).release("execution-b", "consequence-x")
+
+        self.assertEqual(result.reason, "consequence_not_in_active_custody")
+        self.assertEqual(provider.calls, [])
+        self.assertEqual(actuator.calls, [])
+
+    def test_release_after_adoption_evaluates_current_b_custodian(self) -> None:
+        self._submit()
+        self.store.end_execution("execution-a")
+        self.store.adopt("execution-b", "consequence-x")
+        provider = RecordingAuthorityProvider(self._decision)
+        actuator = RecordingReleaseActuator(ActuatorOutcome.SUCCEEDED)
+
+        result = ReleaseBoundary(
+            self.store,
+            provider,
+            actuator,
+            self.clock,
+        ).release("execution-b", "consequence-x")
+
+        self.assertEqual(result.status, ReleaseState.RELEASED)
+        self.assertEqual(provider.calls[0][0].current_execution_id, "execution-b")
+        self.assertEqual(actuator.calls[0].current_execution_id, "execution-b")
+
+    def test_a_bound_authority_cannot_release_after_b_adopts(self) -> None:
+        self._submit()
+        self.store.end_execution("execution-a")
+        self.store.adopt("execution-b", "consequence-x")
+
+        provider = RecordingAuthorityProvider(
+            lambda consequence, now: self._decision(
+                consequence,
+                now,
+                execution_id="execution-a",
+            )
+        )
+        actuator = RecordingReleaseActuator(ActuatorOutcome.SUCCEEDED)
+        result = ReleaseBoundary(
+            self.store,
+            provider,
+            actuator,
+            self.clock,
+        ).release("execution-b", "consequence-x")
+
+        self.assertEqual(result.reason, "authority_custodian_mismatch")
+        self.assertEqual(actuator.calls, [])
+        self.assertEqual(self.store.release_state("consequence-x"), ReleaseState.CONTAINED)
+
+    def test_adopt_then_transfer_preserves_origin_and_material(self) -> None:
+        self._submit()
+        self.store.end_execution("execution-a")
+        self.store.adopt("execution-b", "consequence-x")
+
+        transferred = self.store.transfer(
+            "execution-b",
+            "execution-c",
+            "consequence-x",
+        )
+
+        self.assertEqual(transferred.origin_execution_id, "execution-a")
+        self.assertEqual(transferred.current_execution_id, "execution-c")
+        self.assertEqual(transferred.consequence_type, "synthetic_task")
+        self.assertEqual(transferred.target, "target-x")
+        self.assertEqual(transferred.payload, {"title": "content-y"})
+
+    def test_two_adoption_attempts_have_one_custody_winner(self) -> None:
+        self._submit()
+        self.store.end_execution("execution-a")
+
+        self.store.adopt("execution-b", "consequence-x")
+
+        with self.assertRaises(ValueError):
+            self.store.adopt("execution-c", "consequence-x")
+        self.assertEqual(
+            self.store.read("execution-b", "consequence-x").current_execution_id,
+            "execution-b",
+        )
+
+    def test_terminal_states_are_not_adoptable_or_quarantined(self) -> None:
+        self._submit("released-consequence")
+        provider = RecordingAuthorityProvider(self._decision)
+        actuator = RecordingReleaseActuator(ActuatorOutcome.SUCCEEDED)
+        result = ReleaseBoundary(
+            self.store,
+            provider,
+            actuator,
+            self.clock,
+        ).release("execution-a", "released-consequence")
+        self.assertEqual(result.status, ReleaseState.RELEASED)
+
+        self.store.end_execution("execution-a")
+
+        with self.assertRaises(KeyError):
+            self.store.inspect_quarantined("released-consequence")
+        with self.assertRaises(ValueError):
+            self.store.adopt("execution-b", "released-consequence")
+
+    def test_end_is_atomic_when_a_consequence_is_release_in_progress(self) -> None:
+        self._submit("consequence-one")
+        self._submit("consequence-two")
+        with self.store._release_lock:
+            self.store._release_in_progress.add("consequence-one")
+            try:
+                with self.assertRaises(ValueError):
+                    self.store.end_execution("execution-a")
+            finally:
+                self.store._release_in_progress.remove("consequence-one")
+
+        self.assertEqual(self.store._executions["execution-a"], ExecutionState.ACTIVE)
+        self.assertEqual(
+            self.store.read("execution-a", "consequence-one").current_execution_id,
+            "execution-a",
+        )
+        self.assertEqual(
+            self.store.read("execution-a", "consequence-two").current_execution_id,
+            "execution-a",
+        )
+
+    def test_provider_ending_execution_causes_final_release_recheck_to_fail_closed(self) -> None:
+        self._submit()
+
+        class EndingProvider:
+            def __init__(self, store, decision_factory) -> None:
+                self.store = store
+                self.decision_factory = decision_factory
+                self.calls = 0
+
+            def evaluate(self, consequence, evaluated_at):
+                self.calls += 1
+                decision = self.decision_factory(consequence, evaluated_at)
+                self.store.end_execution("execution-a")
+                return decision
+
+        provider = EndingProvider(self.store, self._decision)
+        actuator = RecordingReleaseActuator(ActuatorOutcome.SUCCEEDED)
+        result = ReleaseBoundary(
+            self.store,
+            provider,
+            actuator,
+            self.clock,
+        ).release("execution-a", "consequence-x")
+
+        self.assertEqual(result.reason, "custody_changed_before_release")
+        self.assertEqual(actuator.calls, [])
+        self.assertEqual(self.store.inspect_quarantined("consequence-x").current_execution_id, None)
+
+    def test_reentrant_end_during_actuation_fails_without_partial_termination(self) -> None:
+        self._submit()
+        provider = RecordingAuthorityProvider(self._decision)
+
+        class EndingActuator:
+            def __init__(self, store) -> None:
+                self.store = store
+                self.end_error = None
+
+            def actuate(self, consequence):
+                try:
+                    self.store.end_execution("execution-a")
+                except ValueError as error:
+                    self.end_error = error
+                return ActuatorOutcome.SUCCEEDED
+
+        actuator = EndingActuator(self.store)
+        result = ReleaseBoundary(
+            self.store,
+            provider,
+            actuator,
+            self.clock,
+        ).release("execution-a", "consequence-x")
+
+        self.assertEqual(result.status, ReleaseState.RELEASED)
+        self.assertIsNotNone(actuator.end_error)
+        self.assertEqual(self.store._executions["execution-a"], ExecutionState.ACTIVE)
+        self.assertEqual(
+            self.store.read("execution-a", "consequence-x").current_execution_id,
+            "execution-a",
+        )
+
 
 class ExecutionScopedConsequenceContainmentRegressionTests(unittest.TestCase):
     def setUp(self) -> None:
