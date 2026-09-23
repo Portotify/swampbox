@@ -1281,6 +1281,250 @@ class ExecutionInheritanceBoundaryTests(unittest.TestCase):
     def _submit(self, consequence_id: str = "consequence-x") -> None:
         self.store.submit("execution-a", consequence_id, self.consequence)
 
+    def _derived(self, parent_consequence_id: str | None) -> ProposedConsequence:
+        return ProposedConsequence(
+            "derived_task",
+            "target-derived",
+            {"source": "derived"},
+            parent_consequence_id=parent_consequence_id,
+        )
+
+    def test_root_consequence_defaults_parent_to_none(self) -> None:
+        self._submit()
+
+        stored = self.store.read("execution-a", "consequence-x")
+
+        self.assertIsNone(stored.parent_consequence_id)
+
+    def test_adoption_then_derive_accepts_single_parent_and_preserves_identity(self) -> None:
+        self._submit()
+        self.store.end_execution("execution-a")
+
+        with self.assertRaises(ValueError):
+            self.store.submit(
+                "execution-b",
+                "consequence-c",
+                self._derived("consequence-x"),
+            )
+
+        self.store.adopt("execution-b", "consequence-x")
+        derived = self.store.submit(
+            "execution-b",
+            "consequence-c",
+            self._derived("consequence-x"),
+        )
+
+        self.assertEqual(derived.parent_consequence_id, "consequence-x")
+        self.assertEqual(derived.origin_execution_id, "execution-b")
+        self.assertEqual(derived.current_execution_id, "execution-b")
+        self.assertEqual(self.store.release_state("consequence-c"), ReleaseState.CONTAINED)
+
+    def test_invalid_parent_does_not_insert_child(self) -> None:
+        with self.assertRaises(KeyError):
+            self.store.submit(
+                "execution-a",
+                "consequence-c",
+                self._derived("missing-parent"),
+            )
+
+        with self.assertRaises(KeyError):
+            self.store.read("execution-a", "consequence-c")
+
+    def test_parent_held_by_another_execution_is_rejected(self) -> None:
+        self._submit()
+
+        with self.assertRaises(ValueError):
+            self.store.submit(
+                "execution-b",
+                "consequence-c",
+                self._derived("consequence-x"),
+            )
+
+    def test_released_parent_is_rejected(self) -> None:
+        self._submit()
+        provider = RecordingAuthorityProvider(self._decision)
+        actuator = RecordingReleaseActuator(ActuatorOutcome.SUCCEEDED)
+        result = ReleaseBoundary(
+            self.store,
+            provider,
+            actuator,
+            self.clock,
+        ).release("execution-a", "consequence-x")
+
+        self.assertEqual(result.status, ReleaseState.RELEASED)
+        with self.assertRaises(ValueError):
+            self.store.submit(
+                "execution-a",
+                "consequence-c",
+                self._derived("consequence-x"),
+            )
+
+    def test_uncertain_parent_is_rejected(self) -> None:
+        self._submit()
+        provider = RecordingAuthorityProvider(self._decision)
+        actuator = RecordingReleaseActuator(ActuatorOutcome.UNCERTAIN)
+        result = ReleaseBoundary(
+            self.store,
+            provider,
+            actuator,
+            self.clock,
+        ).release("execution-a", "consequence-x")
+
+        self.assertEqual(result.status, ReleaseState.UNCERTAIN)
+        with self.assertRaises(ValueError):
+            self.store.submit(
+                "execution-a",
+                "consequence-c",
+                self._derived("consequence-x"),
+            )
+
+    def test_self_parentage_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            self.store.submit(
+                "execution-a",
+                "consequence-c",
+                self._derived("consequence-c"),
+            )
+
+    def test_lineage_survives_transfer_quarantine_and_adoption(self) -> None:
+        self.store.register_execution("execution-d")
+        self._submit()
+        derived = self.store.submit(
+            "execution-a",
+            "consequence-c",
+            self._derived("consequence-x"),
+        )
+
+        self.assertEqual(derived.parent_consequence_id, "consequence-x")
+        self.store.transfer("execution-a", "execution-b", "consequence-c")
+        self.assertEqual(
+            self.store.read("execution-b", "consequence-c").parent_consequence_id,
+            "consequence-x",
+        )
+
+        self.store.end_execution("execution-b")
+        self.assertEqual(
+            self.store.inspect_quarantined("consequence-c").parent_consequence_id,
+            "consequence-x",
+        )
+        self.store.adopt("execution-d", "consequence-c")
+        self.assertEqual(
+            self.store.read("execution-d", "consequence-c").parent_consequence_id,
+            "consequence-x",
+        )
+
+    def test_lineage_is_not_material_comparison(self) -> None:
+        left = self._derived("parent-a")
+        right = self._derived("parent-b")
+
+        self.assertTrue(same_material_consequence(left, right))
+        self.assertFalse(
+            same_material_consequence(
+                left,
+                ProposedConsequence(
+                    "different_task",
+                    right.target,
+                    right.payload,
+                    parent_consequence_id="parent-b",
+                ),
+            )
+        )
+
+    def test_payload_lineage_convention_is_not_canonical_lineage(self) -> None:
+        submitted = self.store.submit(
+            "execution-a",
+            "consequence-payload-parent",
+            ProposedConsequence(
+                "derived_task",
+                "target-derived",
+                {"derived_from": "consequence-x"},
+            ),
+        )
+
+        self.assertIsNone(submitted.parent_consequence_id)
+
+    def test_child_release_uses_independent_authority_evaluation(self) -> None:
+        self._submit()
+        derived = self.store.submit(
+            "execution-a",
+            "consequence-c",
+            self._derived("consequence-x"),
+        )
+        provider = RecordingAuthorityProvider(self._decision)
+        actuator = RecordingReleaseActuator(ActuatorOutcome.SUCCEEDED)
+
+        result = ReleaseBoundary(
+            self.store,
+            provider,
+            actuator,
+            self.clock,
+        ).release("execution-a", "consequence-c")
+
+        self.assertEqual(result.status, ReleaseState.RELEASED)
+        self.assertEqual(len(provider.calls), 1)
+        self.assertEqual(provider.calls[0][0].consequence_id, "consequence-c")
+        self.assertEqual(provider.calls[0][0].parent_consequence_id, "consequence-x")
+        self.assertEqual(actuator.calls[0].parent_consequence_id, "consequence-x")
+        self.assertEqual(derived.parent_consequence_id, "consequence-x")
+
+    def test_parent_state_change_does_not_erase_child_lineage(self) -> None:
+        self._submit()
+        self.store.submit(
+            "execution-a",
+            "consequence-c",
+            self._derived("consequence-x"),
+        )
+        provider = RecordingAuthorityProvider(self._decision)
+        actuator = RecordingReleaseActuator(ActuatorOutcome.SUCCEEDED)
+        result = ReleaseBoundary(
+            self.store,
+            provider,
+            actuator,
+            self.clock,
+        ).release("execution-a", "consequence-x")
+
+        self.assertEqual(result.status, ReleaseState.RELEASED)
+        child = self.store.read("execution-a", "consequence-c")
+        self.assertEqual(child.parent_consequence_id, "consequence-x")
+        self.assertEqual(
+            self.store.release_state("consequence-c"),
+            ReleaseState.CONTAINED,
+        )
+
+    def test_parent_release_in_progress_rejects_derived_submission(self) -> None:
+        self._submit()
+        derived = self._derived("consequence-x")
+
+        class ReentrantActuator:
+            def __init__(self, store) -> None:
+                self.store = store
+                self.error = None
+
+            def actuate(self, consequence):
+                try:
+                    self.store.submit(
+                        "execution-a",
+                        "consequence-c",
+                        derived,
+                    )
+                except ValueError as error:
+                    self.error = error
+                return ActuatorOutcome.SUCCEEDED
+
+        actuator = ReentrantActuator(self.store)
+        provider = RecordingAuthorityProvider(self._decision)
+        result = ReleaseBoundary(
+            self.store,
+            provider,
+            actuator,
+            self.clock,
+        ).release("execution-a", "consequence-x")
+
+        self.assertEqual(result.status, ReleaseState.RELEASED)
+        self.assertIsNotNone(actuator.error)
+        with self.assertRaises(KeyError):
+            self.store.read("execution-a", "consequence-c")
+
     def _decision(
         self,
         contained: ContainedConsequence,

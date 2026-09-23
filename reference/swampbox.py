@@ -26,6 +26,7 @@ class ProposedConsequence:
     consequence_type: str
     target: str
     payload: Any
+    parent_consequence_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,7 @@ class ContainedConsequence:
     consequence_type: str
     target: str
     payload: Any
+    parent_consequence_id: str | None = None
 
 
 class AuthorityVerdict(str, Enum):
@@ -178,6 +180,25 @@ class ExecutionScopedConsequenceStore:
                 raise ValueError("consequence_id already exists")
             _validate_consequence_material(consequence)
 
+            parent_consequence_id = consequence.parent_consequence_id
+            if parent_consequence_id is not None:
+                _validate_identifier(parent_consequence_id, "parent_consequence_id")
+                if parent_consequence_id == consequence_id:
+                    raise ValueError("consequence cannot be its own parent")
+
+                parent = self._consequences.get(parent_consequence_id)
+                if parent is None:
+                    raise KeyError("parent consequence does not exist")
+                if parent_consequence_id in self._release_in_progress:
+                    raise ValueError("parent consequence release is in progress")
+                if (
+                    self._release_states[parent_consequence_id]
+                    is not ReleaseState.CONTAINED
+                ):
+                    raise ValueError("parent consequence is not contained")
+                if parent.current_execution_id != execution_id:
+                    raise ValueError("parent consequence is not current custody")
+
             contained = ContainedConsequence(
                 consequence_id=consequence_id,
                 origin_execution_id=execution_id,
@@ -185,6 +206,7 @@ class ExecutionScopedConsequenceStore:
                 consequence_type=deepcopy(consequence.consequence_type),
                 target=deepcopy(consequence.target),
                 payload=deepcopy(consequence.payload),
+                parent_consequence_id=parent_consequence_id,
             )
             detached = _copy_contained_consequence(contained)
             self._consequences[consequence_id] = contained
