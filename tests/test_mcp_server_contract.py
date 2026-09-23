@@ -7,14 +7,19 @@ import unittest
 from unittest.mock import patch
 
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.transport_security import TransportSecurityMiddleware
 
 from mcp_server import (
     DEFAULT_HOST,
     DEFAULT_PORT,
     MCP_PATH,
     STATELESS_HTTP,
+    TRANSPORT_SECURITY_HOST_ENV,
+    TRANSPORT_SECURITY_ORIGIN_ENV,
     TOOL_ANNOTATIONS,
     TOOL_NAME,
+    VERIFIED_PUBLIC_HOST,
+    VERIFIED_PUBLIC_ORIGIN,
     _load_server_settings,
     _run_server,
     server,
@@ -42,6 +47,20 @@ def _arguments(
         "declaration": declaration or _consequence(),
         "proposed": proposed or _consequence(),
     }
+
+
+def _load_server_settings_for_hosted_binding() -> dict[str, object]:
+    with patch.dict(
+        os.environ,
+        {
+            "HOST": "0.0.0.0",
+            "PORT": "43123",
+            TRANSPORT_SECURITY_HOST_ENV: VERIFIED_PUBLIC_HOST,
+            TRANSPORT_SECURITY_ORIGIN_ENV: VERIFIED_PUBLIC_ORIGIN,
+        },
+        clear=True,
+    ):
+        return _load_server_settings()
 
 
 class MCPServerContractTests(unittest.IsolatedAsyncioTestCase):
@@ -109,7 +128,12 @@ class MCPServerContractTests(unittest.IsolatedAsyncioTestCase):
     def test_startup_consumes_explicit_host_and_port(self) -> None:
         with patch.dict(
             os.environ,
-            {"HOST": "0.0.0.0", "PORT": "43123"},
+            {
+                "HOST": "0.0.0.0",
+                "PORT": "43123",
+                TRANSPORT_SECURITY_HOST_ENV: VERIFIED_PUBLIC_HOST,
+                TRANSPORT_SECURITY_ORIGIN_ENV: VERIFIED_PUBLIC_ORIGIN,
+            },
             clear=True,
         ):
             settings = _load_server_settings()
@@ -143,6 +167,75 @@ class MCPServerContractTests(unittest.IsolatedAsyncioTestCase):
                     _run_server()
 
         run.assert_not_called()
+
+    def test_exact_hosted_transport_security_binding_is_passed_to_sdk(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "HOST": "0.0.0.0",
+                "PORT": "43123",
+                TRANSPORT_SECURITY_HOST_ENV: VERIFIED_PUBLIC_HOST,
+                TRANSPORT_SECURITY_ORIGIN_ENV: VERIFIED_PUBLIC_ORIGIN,
+            },
+            clear=True,
+        ):
+            with patch("mcp_server.server.run") as run:
+                _run_server()
+
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args, ("streamable-http",))
+        settings = run.call_args.kwargs
+        self.assertEqual(settings["host"], "0.0.0.0")
+        self.assertEqual(settings["streamable_http_path"], MCP_PATH)
+        transport_security = settings["transport_security"]
+        self.assertTrue(transport_security.enable_dns_rebinding_protection)
+        self.assertEqual(transport_security.allowed_hosts, [VERIFIED_PUBLIC_HOST])
+        self.assertEqual(transport_security.allowed_origins, [VERIFIED_PUBLIC_ORIGIN])
+        self.assertNotIn("*", transport_security.allowed_hosts)
+        self.assertNotIn("*", transport_security.allowed_origins)
+
+    def test_nonlocal_startup_rejects_nonverified_transport_binding(self) -> None:
+        for configured_host, configured_origin in (
+            ("other.example.com", VERIFIED_PUBLIC_ORIGIN),
+            (VERIFIED_PUBLIC_HOST, "https://other.example.com"),
+        ):
+            with self.subTest(
+                configured_host=configured_host,
+                configured_origin=configured_origin,
+            ):
+                with patch.dict(
+                    os.environ,
+                    {
+                        "HOST": "0.0.0.0",
+                        TRANSPORT_SECURITY_HOST_ENV: configured_host,
+                        TRANSPORT_SECURITY_ORIGIN_ENV: configured_origin,
+                    },
+                    clear=True,
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "FINAL HOSTNAME REQUIRED"):
+                        _load_server_settings()
+
+    def test_exact_host_and_origin_are_accepted(self) -> None:
+        settings = _load_server_settings_for_hosted_binding()
+        transport_security = settings["transport_security"]
+        middleware = TransportSecurityMiddleware(transport_security)
+
+        self.assertTrue(middleware._validate_host(VERIFIED_PUBLIC_HOST))
+        self.assertTrue(middleware._validate_origin(VERIFIED_PUBLIC_ORIGIN))
+
+    def test_unrelated_host_and_origin_are_rejected(self) -> None:
+        settings = _load_server_settings_for_hosted_binding()
+        middleware = TransportSecurityMiddleware(settings["transport_security"])
+
+        self.assertFalse(middleware._validate_host("other.example.com"))
+        self.assertFalse(middleware._validate_origin("https://other.example.com"))
+
+    def test_mcp_path_does_not_change_host_or_origin_matching(self) -> None:
+        settings = _load_server_settings_for_hosted_binding()
+        middleware = TransportSecurityMiddleware(settings["transport_security"])
+
+        self.assertFalse(middleware._validate_host(f"{VERIFIED_PUBLIC_HOST}/mcp"))
+        self.assertFalse(middleware._validate_origin(f"{VERIFIED_PUBLIC_ORIGIN}/mcp"))
 
     async def test_identical_consequences_are_a_material_match(self) -> None:
         result = await self.result_for(_arguments())
