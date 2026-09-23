@@ -124,7 +124,10 @@ non-delivering simulated actuator, and generic receipts.
 This synthetic path is intentionally in-memory and does not contact real APIs,
 source-control systems, ticket systems, queues, mail systems, cloud services,
 or business systems. Its [inheritance experiment](docs/INHERITANCE_EXPERIMENT.md)
-documents the original synthetic sequence and acceptance matrix.
+documents the original synthetic sequence and acceptance matrix. Its legacy
+admission and simulated-actuation code lives in
+`experiments/legacy_synthetic.py`, outside the canonical `reference.swampbox`
+release surface.
 
 ### Controlled GitHub effect experiment
 

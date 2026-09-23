@@ -5,6 +5,9 @@
 > `SwampBoxBoundary.commit` path belong to this experiment; they are not the
 > canonical provider-neutral `ReleaseBoundary` runtime. This experiment's
 > admission model does not model the newer finite authority-freshness contract.
+> The experiment-only implementation is kept in
+> `experiments/legacy_synthetic.py`, not in the canonical
+> `reference.swampbox` module.
 
 ## Objective
 

@@ -13,7 +13,7 @@ from reference.github_issue_effect import (
     GitHubIssueConsequence,
     GitHubIssueExperiment,
 )
-from reference.swampbox import AdmissionResult, SyntheticAdmissionProvider
+from experiments.legacy_synthetic import AdmissionResult, SyntheticAdmissionProvider
 
 
 class ScriptedLookup:

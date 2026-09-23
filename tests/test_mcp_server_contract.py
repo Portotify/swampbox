@@ -357,9 +357,9 @@ class MCPServerContractTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_no_commit_admission_or_actuator_path_is_invoked(self) -> None:
         with (
-            patch("reference.swampbox.SwampBoxBoundary.commit") as commit,
-            patch("reference.swampbox.SyntheticAdmissionProvider.admit") as admit,
-            patch("reference.swampbox.SimulatedActuator.commit") as actuator,
+            patch("experiments.legacy_synthetic.SwampBoxBoundary.commit") as commit,
+            patch("experiments.legacy_synthetic.SyntheticAdmissionProvider.admit") as admit,
+            patch("experiments.legacy_synthetic.SimulatedActuator.commit") as actuator,
         ):
             result = await self.result_for(_arguments())
 

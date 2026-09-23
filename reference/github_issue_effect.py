@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Iterable
 
-from reference.swampbox import AdmissionResult, ProposedConsequence
+from experiments.legacy_synthetic import AdmissionResult
+from reference.swampbox import ProposedConsequence
 
 
 CREATE_GITHUB_ISSUE = "CREATE_GITHUB_ISSUE"

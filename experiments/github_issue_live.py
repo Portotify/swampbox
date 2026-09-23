@@ -20,7 +20,7 @@ from reference.github_issue_effect import (
     GitHubIssueExperiment,
     GitHubIssueReceipt,
 )
-from reference.swampbox import SyntheticAdmissionProvider
+from experiments.legacy_synthetic import SyntheticAdmissionProvider
 
 
 _REPOSITORY_PATTERN = re.compile(

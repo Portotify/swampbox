@@ -9,18 +9,20 @@ from enum import Enum
 import unittest
 from unittest.mock import patch
 
-from reference.swampbox import (
+from experiments.legacy_synthetic import (
     AdmissionResult,
+    ReceiptSink,
+    SimulatedActuator,
+    SwampBoxBoundary,
+    SyntheticAdmissionProvider,
+)
+from reference.swampbox import (
     ArtifactStore,
     ContainedConsequence,
     ExecutionScopedConsequenceStore,
     ExecutionState,
     PersistedArtifact,
     ProposedConsequence,
-    ReceiptSink,
-    SimulatedActuator,
-    SwampBoxBoundary,
-    SyntheticAdmissionProvider,
     ActuatorOutcome,
     AuthorityDecision,
     AuthorityVerdict,
@@ -268,9 +270,9 @@ class ExecutionScopedConsequenceContainmentTests(unittest.TestCase):
         self._submit()
 
         with (
-            patch("reference.swampbox.SyntheticAdmissionProvider.admit") as admit,
-            patch("reference.swampbox.SimulatedActuator.commit") as commit,
-            patch("reference.swampbox.ReceiptSink.record") as record,
+            patch("experiments.legacy_synthetic.SyntheticAdmissionProvider.admit") as admit,
+            patch("experiments.legacy_synthetic.SimulatedActuator.commit") as commit,
+            patch("experiments.legacy_synthetic.ReceiptSink.record") as record,
         ):
             transferred = self.store.transfer(
                 "execution-a", "execution-b", "consequence-x"
