@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
-from pydantic import BaseModel, ConfigDict, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictStr
 
 from reference.swampbox import ProposedConsequence, same_material_consequence
 
@@ -17,9 +17,15 @@ class ConsequenceInput(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    consequence_type: StrictStr
-    target: StrictStr
-    payload: Any
+    consequence_type: StrictStr = Field(
+        description="Type of consequence to compare. Do not include personal or sensitive personal data."
+    )
+    target: StrictStr = Field(
+        description="Target of the consequence to compare. Do not include personal or sensitive personal data."
+    )
+    payload: Any = Field(
+        description="Application-specific material to compare. Do not include personal or sensitive personal data."
+    )
 
 
 class ComparisonReceipt(BaseModel):
@@ -64,7 +70,8 @@ server = MCPServer(
     description=(
         "Compare a supplied consequence declaration with a proposed consequence "
         "using exact modeled material fields. This does not establish authority "
-        "or permission to execute."
+        "or permission to execute. Do not include personal or sensitive personal "
+        "data in consequence inputs."
     ),
     annotations=TOOL_ANNOTATIONS,
     structured_output=True,

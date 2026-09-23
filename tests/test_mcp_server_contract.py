@@ -69,6 +69,31 @@ class MCPServerContractTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(tools[0].annotations, TOOL_ANNOTATIONS)
 
+    async def test_tool_description_exposes_privacy_warning(self) -> None:
+        tools = await server.list_tools()
+
+        self.assertIn(
+            "Do not include personal or sensitive personal data in consequence inputs.",
+            tools[0].description,
+        )
+
+    async def test_input_schema_exposes_privacy_guidance(self) -> None:
+        tools = await server.list_tools()
+        consequence_properties = tools[0].input_schema["$defs"]["ConsequenceInput"]["properties"]
+
+        self.assertEqual(
+            consequence_properties["consequence_type"]["description"],
+            "Type of consequence to compare. Do not include personal or sensitive personal data.",
+        )
+        self.assertEqual(
+            consequence_properties["target"]["description"],
+            "Target of the consequence to compare. Do not include personal or sensitive personal data.",
+        )
+        self.assertEqual(
+            consequence_properties["payload"]["description"],
+            "Application-specific material to compare. Do not include personal or sensitive personal data.",
+        )
+
     def test_startup_defaults_preserve_local_behavior(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(
