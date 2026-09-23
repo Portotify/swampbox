@@ -30,6 +30,24 @@ delegate authority.
 
 `TRANSFER != RELEASE`.
 
+## Consequence lineage
+
+The reference model also preserves a narrow single-parent relationship for
+derived consequences. A consequence may name one existing parent consequence
+when the submitting execution currently holds that parent's custody and the
+parent is still contained. A quarantined parent must first be explicitly
+adopted; inspection alone is not custody.
+
+In the minimal lifecycle, A creates X, A ends, B adopts X, and B may submit C
+with X as its parent. The parent edge is preserved when custody later moves,
+but it is provenance metadata, not material effect identity. Persistence is
+not inheritance, adoption is not authority, and lineage is not authority.
+
+X's authority does not become C's authority. A derived consequence still
+requires its own fresh external authority decision before it can cross the
+supported release boundary. Multi-parent lineage and ancestry traversal are
+not supported.
+
 ## Supported release boundary
 
 A contained consequence does not become released merely because it exists,

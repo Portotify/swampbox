@@ -9,6 +9,35 @@
 > `experiments/legacy_synthetic.py`, not in the canonical
 > `reference.swampbox` module.
 
+## Canonical reference inheritance boundary
+
+The legacy synthetic flow documented below is separate from the current
+execution-scoped inheritance contract. In the canonical store, persistence,
+quarantine, inspection, adoption, custody, derivation, lineage, authority,
+and release are distinct concepts.
+
+When A ends, a contained consequence X remains stored but becomes quarantined
+without an active custodian. B cannot read it through ordinary execution
+scope, release it, or derive a validated child from it merely by inspecting
+it. B must explicitly adopt X first.
+
+After adoption, B may submit a materially new consequence C with X as its
+single parent. The parent edge is established at successful child submission,
+not at adoption time. Adoption changes custody; it does not create, remove, or
+rewrite lineage. Later custody movement of X or C preserves the immediate
+parent edge even though their custodians may diverge.
+
+This lineage is containment/provenance metadata only. It does not establish
+semantic or authenticated causality, and it does not propagate authority,
+permission, freshness, release state, or an `ALLOW` decision from X to C.
+C requires its own authority evaluation at the provider-neutral
+`ReleaseBoundary`. `inspect_quarantined` is inspection, not adoption; adoption
+is custody, not authority; lineage is not authority.
+
+The canonical reference contract supports one parent only. It does not model
+multi-parent derivation, ancestry traversal, durable lineage, or a causal
+graph.
+
 ## Objective
 
 Show the smallest flow in which:
