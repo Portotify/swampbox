@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime, time
+from decimal import Decimal
+from enum import Enum
 import unittest
 from unittest.mock import patch
 
@@ -18,6 +21,18 @@ from reference.swampbox import (
     SyntheticAdmissionProvider,
     same_material_consequence,
 )
+
+
+class CustomString(str):
+    pass
+
+
+class SampleEnum(Enum):
+    VALUE = "value"
+
+
+class CustomProposedConsequence(ProposedConsequence):
+    pass
 
 
 class SwampBoxInheritanceTests(unittest.TestCase):
@@ -345,6 +360,216 @@ class ExecutionScopedConsequenceContainmentTests(unittest.TestCase):
             self.store.read("execution-b", "consequence-nested").payload,
             {"nested": {"items": [{"title": "safe"}]}},
         )
+
+    def test_supported_payload_values_are_accepted(self) -> None:
+        supported = (
+            None,
+            True,
+            7,
+            1.25,
+            "text",
+            [],
+            {},
+            {"nested": [None, False, 3, 2.5, "value"]},
+        )
+
+        for index, payload in enumerate(supported):
+            with self.subTest(index=index, payload_type=type(payload).__name__):
+                submitted = self.store.submit(
+                    "execution-a",
+                    f"supported-{index}",
+                    ProposedConsequence("synthetic_task", "target-x", payload),
+                )
+                self.assertEqual(submitted.payload, payload)
+
+    def test_unsupported_top_level_payload_values_are_rejected(self) -> None:
+        unsupported = (
+            b"bytes",
+            bytearray(b"bytearray"),
+            ("tuple",),
+            {"set"},
+            frozenset({"frozenset"}),
+            1 + 2j,
+            Decimal("1.25"),
+            date(2026, 1, 1),
+            datetime(2026, 1, 1, 12, 0),
+            time(12, 0),
+            SampleEnum.VALUE,
+            object(),
+            lambda: None,
+        )
+
+        for index, payload in enumerate(unsupported):
+            with self.subTest(index=index, payload_type=type(payload).__name__):
+                with self.assertRaises(TypeError):
+                    self.store.submit(
+                        "execution-a",
+                        f"unsupported-{index}",
+                        ProposedConsequence("synthetic_task", "target-x", payload),
+                    )
+
+    def test_non_string_dict_key_is_rejected(self) -> None:
+        with self.assertRaises(TypeError):
+            self.store.submit(
+                "execution-a",
+                "non-string-key",
+                ProposedConsequence("synthetic_task", "target-x", {1: "value"}),
+            )
+
+    def test_non_finite_float_is_rejected(self) -> None:
+        for index, value in enumerate((float("nan"), float("inf"), float("-inf"))):
+            with self.subTest(index=index):
+                with self.assertRaises(ValueError):
+                    self.store.submit(
+                        "execution-a",
+                        f"non-finite-{index}",
+                        ProposedConsequence("synthetic_task", "target-x", value),
+                    )
+
+    def test_nested_unsupported_values_are_rejected(self) -> None:
+        unsupported = (
+            {"items": [object()]},
+            {"nested": {"value": b"bytes"}},
+        )
+
+        for index, payload in enumerate(unsupported):
+            with self.subTest(index=index):
+                with self.assertRaises(TypeError):
+                    self.store.submit(
+                        "execution-a",
+                        f"nested-unsupported-{index}",
+                        ProposedConsequence("synthetic_task", "target-x", payload),
+                    )
+
+    def test_payload_cycles_are_rejected(self) -> None:
+        self_referential_list: list[object] = []
+        self_referential_list.append(self_referential_list)
+
+        self_referential_dict: dict[str, object] = {}
+        self_referential_dict["self"] = self_referential_dict
+
+        indirect_list: list[object] = []
+        indirect_dict: dict[str, object] = {"list": indirect_list}
+        indirect_list.append(indirect_dict)
+
+        for index, payload in enumerate(
+            (self_referential_list, self_referential_dict, indirect_list)
+        ):
+            with self.subTest(index=index):
+                with self.assertRaisesRegex(
+                    ValueError, "consequence payload contains a cycle"
+                ):
+                    self.store.submit(
+                        "execution-a",
+                        f"cycle-{index}",
+                        ProposedConsequence("synthetic_task", "target-x", payload),
+                    )
+
+    def test_shared_non_cyclic_reference_is_accepted(self) -> None:
+        shared = {"value": "safe"}
+        payload = {"left": shared, "right": shared}
+
+        submitted = self.store.submit(
+            "execution-a",
+            "shared-reference",
+            ProposedConsequence("synthetic_task", "target-x", payload),
+        )
+
+        self.assertEqual(
+            submitted.payload,
+            {"left": {"value": "safe"}, "right": {"value": "safe"}},
+        )
+
+    def test_rejected_submit_does_not_reserve_consequence_id(self) -> None:
+        with self.assertRaises(TypeError):
+            self.store.submit(
+                "execution-a",
+                "reusable-id",
+                ProposedConsequence("synthetic_task", "target-x", object()),
+            )
+        with self.assertRaises(KeyError):
+            self.store.read("execution-a", "reusable-id")
+
+        submitted = self.store.submit(
+            "execution-a",
+            "reusable-id",
+            ProposedConsequence("synthetic_task", "target-x", {"valid": True}),
+        )
+        self.assertEqual(submitted.payload, {"valid": True})
+
+    def test_consequence_type_and_target_require_exact_str(self) -> None:
+        invalid_values = (None, 1, CustomString("custom"))
+
+        for field_name in ("consequence_type", "target"):
+            for index, invalid_value in enumerate(invalid_values):
+                with self.subTest(field=field_name, index=index):
+                    fields: dict[str, object] = {
+                        "consequence_type": "synthetic_task",
+                        "target": "target-x",
+                        "payload": {"valid": True},
+                    }
+                    fields[field_name] = invalid_value
+                    with self.assertRaises(TypeError):
+                        self.store.submit(
+                            "execution-a",
+                            f"invalid-{field_name}-{index}",
+                            ProposedConsequence(**fields),  # type: ignore[arg-type]
+                        )
+
+    def test_exact_proposed_consequence_is_accepted(self) -> None:
+        submitted = self.store.submit(
+            "execution-a",
+            "exact-consequence",
+            ProposedConsequence("synthetic_task", "target-x", {"valid": True}),
+        )
+
+        self.assertEqual(submitted.consequence_type, "synthetic_task")
+        self.assertEqual(submitted.target, "target-x")
+
+    def test_proposed_consequence_subclass_is_rejected_and_id_remains_reusable(
+        self,
+    ) -> None:
+        subclass_consequence = CustomProposedConsequence(
+            "synthetic_task", "target-x", {"valid": True}
+        )
+
+        with self.assertRaises(TypeError):
+            self.store.submit(
+                "execution-a", "subclass-id", subclass_consequence
+            )
+        with self.assertRaises(KeyError):
+            self.store.read("execution-a", "subclass-id")
+
+        submitted = self.store.submit(
+            "execution-a",
+            "subclass-id",
+            ProposedConsequence("synthetic_task", "target-x", {"valid": True}),
+        )
+        self.assertEqual(submitted.payload, {"valid": True})
+
+    def test_failed_detached_return_copy_does_not_store_or_reserve_id(self) -> None:
+        with patch(
+            "reference.swampbox._copy_contained_consequence",
+            side_effect=RuntimeError("detached copy failed"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "detached copy failed"):
+                self.store.submit(
+                    "execution-a",
+                    "return-copy-id",
+                    ProposedConsequence(
+                        "synthetic_task", "target-x", {"valid": True}
+                    ),
+                )
+
+        with self.assertRaises(KeyError):
+            self.store.read("execution-a", "return-copy-id")
+
+        submitted = self.store.submit(
+            "execution-a",
+            "return-copy-id",
+            ProposedConsequence("synthetic_task", "target-x", {"valid": True}),
+        )
+        self.assertEqual(submitted.payload, {"valid": True})
 
 
 if __name__ == "__main__":

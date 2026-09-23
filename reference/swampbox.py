@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, replace
+import math
 from typing import Any
 
 
@@ -86,10 +87,11 @@ class ExecutionScopedConsequenceStore:
         _validate_identifier(execution_id, "execution_id")
         _validate_identifier(consequence_id, "consequence_id")
         self._require_registered_execution(execution_id)
-        if not isinstance(consequence, ProposedConsequence):
-            raise TypeError("consequence must be a ProposedConsequence")
+        if type(consequence) is not ProposedConsequence:
+            raise TypeError("consequence must be an exact ProposedConsequence")
         if consequence_id in self._consequences:
             raise ValueError("consequence_id already exists")
+        _validate_consequence_material(consequence)
 
         contained = ContainedConsequence(
             consequence_id=consequence_id,
@@ -99,8 +101,9 @@ class ExecutionScopedConsequenceStore:
             target=deepcopy(consequence.target),
             payload=deepcopy(consequence.payload),
         )
+        detached = _copy_contained_consequence(contained)
         self._consequences[consequence_id] = contained
-        return _copy_contained_consequence(contained)
+        return detached
 
     def read(
         self,
@@ -155,6 +158,58 @@ class ExecutionScopedConsequenceStore:
 def _validate_identifier(value: str, field_name: str) -> None:
     if not isinstance(value, str) or not value or value.strip() != value:
         raise ValueError(f"{field_name} must be a non-empty identifier")
+
+
+def _validate_consequence_material(consequence: ProposedConsequence) -> None:
+    if type(consequence.consequence_type) is not str:
+        raise TypeError("consequence_type must be an exact str")
+    if type(consequence.target) is not str:
+        raise TypeError("target must be an exact str")
+    _validate_payload_value(consequence.payload, set())
+
+
+def _validate_payload_value(value: Any, active_containers: set[int]) -> None:
+    value_type = type(value)
+    if value is None or value_type is bool or value_type is int:
+        return
+    if value_type is float:
+        if not math.isfinite(value):
+            raise ValueError("consequence payload float must be finite")
+        return
+    if value_type is str:
+        return
+
+    if value_type is list:
+        _validate_container_path(value, active_containers)
+        try:
+            for item in value:
+                _validate_payload_value(item, active_containers)
+        finally:
+            active_containers.remove(id(value))
+        return
+
+    if value_type is dict:
+        _validate_container_path(value, active_containers)
+        try:
+            for key, item in value.items():
+                if type(key) is not str:
+                    raise TypeError("consequence payload dict keys must be exact str")
+                _validate_payload_value(item, active_containers)
+        finally:
+            active_containers.remove(id(value))
+        return
+
+    raise TypeError("unsupported consequence payload value type")
+
+
+def _validate_container_path(
+    container: list[Any] | dict[str, Any],
+    active_containers: set[int],
+) -> None:
+    container_id = id(container)
+    if container_id in active_containers:
+        raise ValueError("consequence payload contains a cycle")
+    active_containers.add(container_id)
 
 
 def _copy_contained_consequence(
