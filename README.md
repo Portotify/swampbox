@@ -40,8 +40,29 @@ Only an explicit `ALLOW` for the exact proposed consequence may reach the
 simulated actuator. Missing, malformed, `HOLD`, `DENY`, and mismatched
 admission states fail closed.
 
-SwampBox was initiated by Portotify. The reference experiments remain
-provider-neutral and have no dependency on Portotify Core.
+SwampBox is an open-source project by Portotify. The reference experiments
+remain provider-neutral and have no dependency on Portotify Core.
+
+## Optional MCP surface
+
+The repository also includes an optional local MCP server with exactly one
+tool, `compare_consequence_binding`. It deterministically compares the
+modeled `consequence_type`, `target`, and `payload` fields of a supplied
+declaration and proposal, returning `MATERIAL_MATCH` or
+`MATERIAL_MISMATCH`. A match reports material field equality only; it does
+not establish authorization or permission to execute anything.
+
+See the [MCP contract](docs/MCP.md) for the exact schema, semantics, and
+local Streamable HTTP instructions.
+
+From the repository root, install the pinned MCP runtime in a local virtual
+environment and start the server with:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-mcp.txt
+.\.venv\Scripts\python.exe mcp_server.py
+```
 
 ## What is included
 

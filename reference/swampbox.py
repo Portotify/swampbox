@@ -121,6 +121,14 @@ def _same_consequence(
     )
 
 
+def same_material_consequence(
+    declaration: ProposedConsequence, proposed: ProposedConsequence
+) -> bool:
+    """Return whether two consequences have identical modeled material fields."""
+
+    return _same_consequence(declaration, proposed)
+
+
 class SwampBoxBoundary:
     """The normal route from an admission result to the actuator."""
 
@@ -164,4 +172,3 @@ class SwampBoxBoundary:
     ) -> Receipt:
         receipt = Receipt(committed, consequence, outcome)
         return self._sink.record(receipt)
-
