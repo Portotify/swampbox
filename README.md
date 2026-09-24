@@ -53,9 +53,46 @@ custodian. Reading, submitting, and transferring are scoped to registered
 executions, and returned consequence snapshots are detached from internal
 mutable state.
 
+Here, `execution_id` is a caller-supplied logical handle used by the reference
+implementation to identify registered executions and scope store operations.
+Registration establishes store state, not authentication, and returns no
+authentication credential: an `execution_id` is not an authenticated principal
+or credential, and the reference implementation does not establish that the
+in-process caller supplying it is the execution represented by that identifier.
+Store checks such as registration, `ACTIVE` state, a supplied source or release
+ID equaling the current custodian, and `AuthorityDecision.execution_id`
+matching the custodian are state or binding predicates; they do not establish
+who the Python caller is or that the caller independently authenticated as that
+execution.
+
 Explicit transfer moves custody and visibility from one registered execution to
 another. It does not release or execute the consequence, grant permission, or
 delegate authority.
+
+`transfer(source_execution_id, target_execution_id, consequence_id)` is an
+immediate custody transition, not a two-phase handoff. After the relevant
+execution and state predicates pass, the target becomes the current custodian
+and visibility moves immediately; there is no pending recipient awaiting
+acceptance or adoption.
+
+Adoption is separate from transfer. `adopt(execution_id, consequence_id)`
+applies to a contained consequence whose current custodian is `None`
+(quarantined). No designated recipient is stored for such a consequence, and
+any registered `ACTIVE` execution may adopt it under the existing predicates;
+adoption then makes that execution the current custodian. When an execution
+ends, contained consequences it holds likewise become quarantined and
+adoptable. Thus, “B adopts X” means an explicit state transition requested
+using B's logical execution handle, not acceptance of a previous transfer or
+authenticated consent.
+
+Custody establishes visibility and current custody, not release authority or
+effect admissibility. Moving custody from A to B does not turn authority bound
+to A into authority for B; the release path still performs its separate
+authority checks. Adoption likewise does not establish current or continuing
+authority, authority freshness, or revocation state. This is a cooperative
+in-process reference model that trusts application or integrator code to present
+logical execution handles correctly; integrations that need authenticated caller
+identity must establish that property outside this model.
 
 `TRANSFER != RELEASE`.
 
