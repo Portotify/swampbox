@@ -80,10 +80,21 @@ applies to a contained consequence whose current custodian is `None`
 (quarantined). No designated recipient is stored for such a consequence, and
 any registered `ACTIVE` execution may adopt it under the existing predicates;
 adoption then makes that execution the current custodian. When an execution
-ends, contained consequences it holds likewise become quarantined and
-adoptable. Thus, “B adopts X” means an explicit state transition requested
-using B's logical execution handle, not acceptance of a previous transfer or
-authenticated consent.
+ends, consequences it holds that remain in release state `CONTAINED` become
+quarantined and adoptable. Thus, “B adopts X” means an explicit state
+transition requested using B's logical execution handle, not acceptance of a
+previous transfer or authenticated consent.
+
+`current_execution_id` is state-dependent: for a `CONTAINED` consequence, a
+non-`None` value identifies its current logical custodian. For a `RELEASED` or
+`UNCERTAIN` consequence, it may retain the last custodian's execution ID after
+that execution becomes `ENDED`. The retained ID alone does not establish an
+active execution, read access, or authority. Quarantine requires both
+`CONTAINED` state and `current_execution_id is None`; ending an execution does
+not make its terminal consequences adoptable, transferable, or eligible for
+another supported release. `origin_execution_id` and, where present,
+`parent_consequence_id` preserve separate provenance, not a complete custody
+history.
 
 Custody establishes visibility and current custody, not release authority or
 effect admissibility. Moving custody from A to B does not turn authority bound
