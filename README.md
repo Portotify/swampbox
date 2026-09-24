@@ -87,7 +87,8 @@ The actuator reports the result of the supported attempt:
 This release path is an in-memory, cooperative reference model. It does not
 authenticate execution identities, provide durable crash reconciliation or
 distributed atomicity, guarantee exactly-once external effects, or enforce
-universal routing of every effect-capable path through SwampBox.
+universal routing of every effect-capable path through SwampBox (see
+[Direct actuator bypass](#direct-actuator-bypass)).
 
 Within one store instance, the reference store orders operations with a single
 in-process lock, and that lock is held through the final release critical
@@ -248,6 +249,31 @@ boundary, consequence containment has not been established. The synthetic
 prototype does not claim to solve that deployment problem. The controlled
 GitHub experiment likewise does not prevent a direct bypass outside the
 demonstrated path.
+
+The supported release path routes effect attempts through `ReleaseBoundary`. In
+the supported composition it is the gate immediately before an actuator is
+invoked, and its authority, custody, material, and temporal checks apply to each
+attempt made through it. The reference implementation does not technically force
+effect-capable code to use it, and it does not defend against in-process code
+that deliberately calls an effect sink directly. Application or integrator code
+that constructs the composition, or that holds an actuator or a direct external
+credential, is inside this model's trust boundary: it is trusted to keep effects
+on the supported path. That is an assumption of the model, not a claim that such
+code is safe, and SwampBox does not authenticate or constrain it. Consequence
+containment is therefore a property of an integration that preserves this
+routing, not of the boundary alone.
+
+An actuator is an effect sink, not an authority boundary. It executes effects
+that have already been admitted and is not expected to repeat custody, binding,
+or authority checks; those belong to the boundary. `AuthorityProvider` is the
+authority source supplied to the boundary and does not enforce routing. Both are
+injected dependencies, which is intended composition: when
+`ReleaseBoundary.release` is used, the actuator is reached only after the
+boundary's checks. Python importability and underscore naming are not
+enforcement boundaries, and direct mutation of private implementation state by
+in-process code is outside the supported API. Stronger technical enforcement
+would need an additional architectural boundary that this reference
+implementation does not provide.
 
 ## Non-claims
 
