@@ -17,6 +17,34 @@ sandbox escape.
 
 Persistence is not authority.
 
+## Scope of this repository
+
+This repository is the public reference surface of SwampBox, not the full scope
+of the project. It is an inspectable implementation with an offline test suite
+and, where stated, recorded experiments, and it can be run and reproduced on its
+own terms. It covers consequence containment and the primitives around it:
+custody, adoption, lineage, and a release boundary in front of an external
+effect.
+
+SwampBox is concerned with consequences after they are produced: how they remain
+contained, retain lineage, move between execution contexts, acquire custody, and
+approach a boundary where an external effect may occur, and, at the governance
+level, whether that specific effect should cross the boundary and whether the
+authority supplied for it remains valid at that point. This repository
+implements a defined part of that surface.
+
+SwampBox also has an active non-public architecture and implementation track
+covering a broader governance and enforcement surface. That work is
+intentionally outside this repository's disclosure boundary: its internal
+architecture, implementation details, integration mechanics, and proprietary
+material are not published here.
+
+This separation defines the project's disclosure boundary. The public
+reference implementation stands on its own documented behavior, test suite,
+and recorded evidence. The existence of non-public work does not by itself
+establish any undocumented capability, guarantee, or resolution of a
+limitation documented here.
+
 ## Current reference implementation
 
 The in-memory consequence store provides execution-scoped visibility and
