@@ -163,6 +163,23 @@ authority. The consequence is the exact repository/title/body contract; the
 path performs no automatic create retry. A direct bypass remains outside the
 demonstrated containment.
 
+### Live external-effect validation
+
+A later controlled run used the canonical consequence lifecycle and the
+provider-neutral `ReleaseBoundary` against a disposable private GitHub
+repository. An authority decision bound to the parent consequence, and one
+rebound to the derived consequence but carrying the parent's material, were
+each rejected by the boundary with no external write. A fresh decision bound to
+the derived consequence then permitted one GitHub issue-creation attempt, and a
+read-only check observed the issue. In this experiment, lineage did not
+substitute for release authority.
+
+This was one run with one effect and a scripted in-process authority provider.
+It did not compare a real sandbox, inject authority revocation, exercise crash
+recovery, or establish production readiness. See the
+[experiment record](docs/GITHUB_EFFECT_EXPERIMENT.md) for methodology, evidence
+identifiers, and limits.
+
 ## Direct actuator bypass
 
 The simulated actuator exposes a low-level method so the bypass assumption is
