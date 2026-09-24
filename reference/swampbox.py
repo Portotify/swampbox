@@ -658,9 +658,13 @@ def _decision_id_or_none(decision: object) -> str | None:
 
 
 def _normalize_actuator_outcome(value: object) -> ActuatorOutcome:
-    if isinstance(value, ActuatorOutcome):
+    # Recognize canonical outcomes by exact type only. type() cannot be
+    # overridden by the value, so no attacker-controlled __eq__/__hash__/
+    # __class__ runs before the value is known to be a real member or a plain
+    # str. Anything else is unrecognized and fails closed as UNCERTAIN.
+    if type(value) is ActuatorOutcome:
         return value
-    if isinstance(value, str):
+    if type(value) is str:
         try:
             return ActuatorOutcome(value)
         except ValueError:

@@ -81,6 +81,93 @@ class HostileIdentifier(str):
         return super().strip(*args)
 
 
+class HostileOutcomeStr(str):
+    """Test-only str subclass posing as an outcome: lying eq, pinned hash."""
+
+    def __new__(cls, value: str, alias: str) -> "HostileOutcomeStr":
+        obj = super().__new__(cls, value)
+        obj.alias = alias
+        obj.calls: list[str] = []
+        return obj
+
+    def __eq__(self, other) -> bool:
+        self.calls.append("eq")
+        return True
+
+    def __ne__(self, other) -> bool:
+        self.calls.append("ne")
+        return False
+
+    def __hash__(self) -> int:
+        self.calls.append("hash")
+        return hash(self.alias)
+
+
+class HostileOutcomeObject:
+    """Test-only non-str outcome with lying equality and a pinned hash."""
+
+    def __init__(self, alias: str) -> None:
+        self.alias = alias
+        self.calls: list[str] = []
+
+    def __eq__(self, other) -> bool:
+        self.calls.append("eq")
+        return True
+
+    def __ne__(self, other) -> bool:
+        self.calls.append("ne")
+        return False
+
+    def __hash__(self) -> int:
+        self.calls.append("hash")
+        return hash(self.alias)
+
+
+class HostileEqualityOnlyOutcome:
+    """Test-only outcome: lying __eq__ only (identity hash)."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def __eq__(self, other) -> bool:
+        self.calls.append("eq")
+        return True
+
+    __hash__ = object.__hash__
+
+
+class HostileHashOnlyOutcome:
+    """Test-only outcome: pinned hash only (identity equality)."""
+
+    def __init__(self, alias: str) -> None:
+        self.alias = alias
+        self.calls: list[str] = []
+
+    def __hash__(self) -> int:
+        self.calls.append("hash")
+        return hash(self.alias)
+
+
+class ForeignStrEnum(str, Enum):
+    DEFINITE_NOT_EXECUTED = "DEFINITE_NOT_EXECUTED"
+
+
+class PlainStrSubclass(str):
+    pass
+
+
+class ScriptedOutcomeActuator:
+    """Counts entries; each entry returns the next scripted outcome."""
+
+    def __init__(self, *outcomes) -> None:
+        self.outcomes = list(outcomes)
+        self.effects = 0
+
+    def actuate(self, consequence: ContainedConsequence):
+        self.effects += 1
+        return self.outcomes.pop(0)
+
+
 class EqualitySpoof:
     def __eq__(self, other):
         return True
@@ -1065,12 +1152,15 @@ class ReleaseBoundaryTests(unittest.TestCase):
                 )
 
     def test_ordinary_normalization_exception_marks_uncertain_result(self) -> None:
-        actuator = CountingReleaseActuator(
-            result=_hash_raising_outcome(RuntimeError("normalization failed"))
-        )
+        # The actuator really succeeded; normalization itself then fails.
+        actuator = CountingReleaseActuator(result=ActuatorOutcome.SUCCEEDED)
         store, provider, boundary = self._fresh_release(actuator)
 
-        result = boundary.release("execution-a", "consequence-x")
+        with patch(
+            "reference.swampbox._normalize_actuator_outcome",
+            side_effect=RuntimeError("normalization failed"),
+        ):
+            result = boundary.release("execution-a", "consequence-x")
 
         self.assertEqual(result.status, ReleaseState.UNCERTAIN)
         self.assertEqual(result.reason, "actuator_outcome_uncertain")
@@ -1079,11 +1169,14 @@ class ReleaseBoundaryTests(unittest.TestCase):
 
     def test_normalization_base_exception_marks_uncertain_and_propagates(self) -> None:
         signal = KeyboardInterrupt()
-        actuator = CountingReleaseActuator(result=_hash_raising_outcome(signal))
+        actuator = CountingReleaseActuator(result=ActuatorOutcome.SUCCEEDED)
         store, provider, boundary = self._fresh_release(actuator)
 
-        with self.assertRaises(KeyboardInterrupt) as caught:
-            boundary.release("execution-a", "consequence-x")
+        with patch(
+            "reference.swampbox._normalize_actuator_outcome", side_effect=signal
+        ):
+            with self.assertRaises(KeyboardInterrupt) as caught:
+                boundary.release("execution-a", "consequence-x")
 
         self.assertIs(caught.exception, signal)
         self._assert_uncertain_and_not_retried(store, provider, boundary, actuator)
@@ -2437,6 +2530,210 @@ class IdentifierExactTypeBindingTests(unittest.TestCase):
                 self.assertEqual(store.release_state("consequence-x"), ReleaseState.CONTAINED)
                 self.assertEqual(len(provider.calls), 1)
                 self.assertEqual(hostile.calls, [])
+
+
+class ActuatorOutcomeExactRecognitionTests(unittest.TestCase):
+    """F-03: only exactly recognized outcomes may carry finality meaning."""
+
+    MATERIAL = ProposedConsequence("synthetic_task", "target-x", {"title": "content-y"})
+
+    def setUp(self) -> None:
+        self.clock = MutableClock(datetime(2026, 1, 1, 12, 0, 0))
+
+    def _decision(self, contained: ContainedConsequence, evaluated_at: datetime):
+        return AuthorityDecision(
+            decision_id="decision-f03",
+            verdict=AuthorityVerdict.ALLOW.value,
+            consequence_id=contained.consequence_id,
+            execution_id=contained.current_execution_id,
+            bound_consequence=ProposedConsequence(
+                contained.consequence_type, contained.target, contained.payload
+            ),
+            issued_at=evaluated_at,
+            valid_until=evaluated_at + timedelta(minutes=5),
+        )
+
+    def _world(self, actuator):
+        store = ExecutionScopedConsequenceStore()
+        store.register_execution("execution-a")
+        store.submit("execution-a", "consequence-x", self.MATERIAL)
+        provider = RecordingAuthorityProvider(self._decision)
+        boundary = ReleaseBoundary(store, provider, actuator, self.clock)
+        return store, provider, boundary
+
+    def _assert_terminal_uncertain_after_first_release(
+        self, store, provider, boundary, actuator, first
+    ) -> None:
+        provider_calls = len(provider.calls)
+        second = boundary.release("execution-a", "consequence-x")
+
+        # The security consequence first: no second actuator entry.
+        self.assertEqual(actuator.effects, 1)
+        self.assertEqual(first.status, ReleaseState.UNCERTAIN)
+        self.assertEqual(first.reason, "actuator_outcome_uncertain")
+        self.assertIs(first.actuator_outcome, ActuatorOutcome.UNCERTAIN)
+        self.assertFalse(first.released)
+        self.assertEqual(store.release_state("consequence-x"), ReleaseState.UNCERTAIN)
+        self.assertNotIn("consequence-x", store._release_in_progress)
+        self.assertEqual(second.reason, "consequence_not_releasable")
+        self.assertFalse(second.released)
+        self.assertEqual(len(provider.calls), provider_calls)
+
+    # -- primary regression (the 14A duplicate-actuation attack) -------------
+
+    def test_spoofed_dne_after_effect_cannot_permit_second_actuation(self) -> None:
+        hostile = HostileOutcomeStr("effect-was-performed", alias="DEFINITE_NOT_EXECUTED")
+        # A second entry (only possible if the first was misread as retryable)
+        # would report SUCCEEDED, i.e. a duplicate real effect.
+        actuator = ScriptedOutcomeActuator(hostile, ActuatorOutcome.SUCCEEDED)
+        store, provider, boundary = self._world(actuator)
+
+        first = boundary.release("execution-a", "consequence-x")
+
+        self.assertEqual(actuator.effects, 1)
+        self._assert_terminal_uncertain_after_first_release(
+            store, provider, boundary, actuator, first
+        )
+        self.assertEqual(hostile.calls, [])
+
+    # -- hostile / malformed outcome matrix -------------------------------------
+
+    def test_every_noncanonical_outcome_is_uncertain_and_terminal(self) -> None:
+        cases = {
+            "str subclass spoofing DEFINITE_NOT_EXECUTED": lambda: HostileOutcomeStr("x", alias="DEFINITE_NOT_EXECUTED"),
+            "str subclass spoofing SUCCEEDED": lambda: HostileOutcomeStr("x", alias="SUCCEEDED"),
+            "object with lying __eq__ and __hash__ (DNE)": lambda: HostileOutcomeObject("DEFINITE_NOT_EXECUTED"),
+            "object with lying __eq__ and __hash__ (SUCCEEDED)": lambda: HostileOutcomeObject("SUCCEEDED"),
+            "object with lying __eq__ only": HostileEqualityOnlyOutcome,
+            "object with lying __hash__ only": lambda: HostileHashOnlyOutcome("SUCCEEDED"),
+            "hash-raising str subclass": lambda: _hash_raising_outcome(RuntimeError("hash")),
+            "honest plain str subclass of DNE": lambda: PlainStrSubclass("DEFINITE_NOT_EXECUTED"),
+            "honest plain str subclass of SUCCEEDED": lambda: PlainStrSubclass("SUCCEEDED"),
+            "foreign str Enum with DNE value": lambda: ForeignStrEnum.DEFINITE_NOT_EXECUTED,
+            "None": lambda: None,
+            "True": lambda: True,
+            "False": lambda: False,
+            "int 0": lambda: 0,
+            "int 1": lambda: 1,
+            "arbitrary object": object,
+            "bytes": lambda: b"SUCCEEDED",
+            "unknown exact str": lambda: "SURPRISE",
+            "wrong-case exact str": lambda: "succeeded",
+            "padded exact str": lambda: "SUCCEEDED ",
+        }
+        for name, make in cases.items():
+            with self.subTest(outcome=name):
+                value = make()
+                actuator = ScriptedOutcomeActuator(value, ActuatorOutcome.SUCCEEDED)
+                store, provider, boundary = self._world(actuator)
+
+                first = boundary.release("execution-a", "consequence-x")
+
+                self._assert_terminal_uncertain_after_first_release(
+                    store, provider, boundary, actuator, first
+                )
+                self.assertEqual(getattr(value, "calls", []), [])
+
+    # -- canonical controls --------------------------------------------------
+
+    def test_canonical_succeeded_still_releases_and_is_terminal(self) -> None:
+        actuator = ScriptedOutcomeActuator(ActuatorOutcome.SUCCEEDED)
+        store, provider, boundary = self._world(actuator)
+
+        first = boundary.release("execution-a", "consequence-x")
+        second = boundary.release("execution-a", "consequence-x")
+
+        self.assertEqual(first.status, ReleaseState.RELEASED)
+        self.assertEqual(first.reason, "actuator_succeeded")
+        self.assertIs(first.actuator_outcome, ActuatorOutcome.SUCCEEDED)
+        self.assertEqual(second.reason, "consequence_not_releasable")
+        self.assertEqual(actuator.effects, 1)
+        self.assertEqual(len(provider.calls), 1)
+
+    def test_canonical_dne_stays_contained_and_a_legitimate_retry_succeeds(self) -> None:
+        actuator = ScriptedOutcomeActuator(
+            ActuatorOutcome.DEFINITE_NOT_EXECUTED, ActuatorOutcome.SUCCEEDED
+        )
+        store, provider, boundary = self._world(actuator)
+
+        first = boundary.release("execution-a", "consequence-x")
+
+        self.assertEqual(first.status, ReleaseState.CONTAINED)
+        self.assertEqual(first.reason, "actuator_definitely_not_executed")
+        self.assertIs(first.actuator_outcome, ActuatorOutcome.DEFINITE_NOT_EXECUTED)
+        self.assertEqual(store.release_state("consequence-x"), ReleaseState.CONTAINED)
+        self.assertNotIn("consequence-x", store._release_in_progress)
+
+        second = boundary.release("execution-a", "consequence-x")
+
+        self.assertEqual(second.status, ReleaseState.RELEASED)
+        self.assertEqual(second.reason, "actuator_succeeded")
+        self.assertEqual(actuator.effects, 2)
+        self.assertEqual(len(provider.calls), 2)
+
+    def test_canonical_dne_may_retry_but_spoofed_dne_may_not(self) -> None:
+        canonical = ScriptedOutcomeActuator(
+            ActuatorOutcome.DEFINITE_NOT_EXECUTED, ActuatorOutcome.SUCCEEDED
+        )
+        spoofed = ScriptedOutcomeActuator(
+            HostileOutcomeStr("x", alias="DEFINITE_NOT_EXECUTED"),
+            ActuatorOutcome.SUCCEEDED,
+        )
+        results = {}
+        for name, actuator in (("canonical", canonical), ("spoofed", spoofed)):
+            store, provider, boundary = self._world(actuator)
+            boundary.release("execution-a", "consequence-x")
+            results[name] = (
+                boundary.release("execution-a", "consequence-x"),
+                actuator.effects,
+                store.release_state("consequence-x"),
+            )
+
+        self.assertEqual(results["spoofed"][1], 1)
+        self.assertEqual(results["spoofed"][2], ReleaseState.UNCERTAIN)
+        self.assertEqual(results["spoofed"][0].reason, "consequence_not_releasable")
+        self.assertEqual(results["canonical"][1], 2)
+        self.assertEqual(results["canonical"][2], ReleaseState.RELEASED)
+
+    def test_canonical_uncertain_stays_terminal(self) -> None:
+        actuator = ScriptedOutcomeActuator(
+            ActuatorOutcome.UNCERTAIN, ActuatorOutcome.SUCCEEDED
+        )
+        store, provider, boundary = self._world(actuator)
+
+        first = boundary.release("execution-a", "consequence-x")
+
+        self._assert_terminal_uncertain_after_first_release(
+            store, provider, boundary, actuator, first
+        )
+
+    def test_exact_builtin_strings_remain_recognized(self) -> None:
+        # ReleaseActuator is declared as returning ``ActuatorOutcome | str``;
+        # exact built-in strings keep their meaning, subclasses do not.
+        expected = {
+            "SUCCEEDED": (ReleaseState.RELEASED, "actuator_succeeded"),
+            "DEFINITE_NOT_EXECUTED": (ReleaseState.CONTAINED, "actuator_definitely_not_executed"),
+            "UNCERTAIN": (ReleaseState.UNCERTAIN, "actuator_outcome_uncertain"),
+        }
+        for raw, (state, reason) in expected.items():
+            with self.subTest(raw=raw):
+                store, provider, boundary = self._world(ScriptedOutcomeActuator(raw))
+
+                result = boundary.release("execution-a", "consequence-x")
+
+                self.assertEqual((result.status, result.reason), (state, reason))
+
+    # -- exception controls (12U) ------------------------------------------------
+
+    def test_ordinary_actuator_exception_is_uncertain_and_terminal(self) -> None:
+        actuator = CountingReleaseActuator(raises=RuntimeError("response lost"))
+        store, provider, boundary = self._world(actuator)
+
+        first = boundary.release("execution-a", "consequence-x")
+
+        self._assert_terminal_uncertain_after_first_release(
+            store, provider, boundary, actuator, first
+        )
 
 
 if __name__ == "__main__":
