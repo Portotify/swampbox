@@ -2306,6 +2306,208 @@ class ExecutionInheritanceBoundaryTests(unittest.TestCase):
         )
 
 
+class RemainingCoverageRegressionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.clock = MutableClock(datetime(2026, 1, 1, 12, 0, 0))
+        self.consequence = ProposedConsequence(
+            consequence_type="synthetic_task",
+            target="target-x",
+            payload={"title": "content-y"},
+        )
+
+    def _decision(
+        self,
+        consequence: ContainedConsequence,
+        evaluated_at: datetime,
+        bound_payload: object | None = None,
+    ) -> AuthorityDecision:
+        return AuthorityDecision(
+            decision_id="decision-f12",
+            verdict=AuthorityVerdict.ALLOW.value,
+            consequence_id=consequence.consequence_id,
+            execution_id=consequence.current_execution_id,
+            bound_consequence=ProposedConsequence(
+                consequence_type=consequence.consequence_type,
+                target=consequence.target,
+                payload=(
+                    consequence.payload
+                    if bound_payload is None
+                    else bound_payload
+                ),
+            ),
+            issued_at=evaluated_at,
+            valid_until=evaluated_at + timedelta(minutes=5),
+        )
+
+    def _terminal_case(self, outcome: ActuatorOutcome):
+        store = ExecutionScopedConsequenceStore()
+        for execution_id in ("execution-a", "execution-b", "execution-c"):
+            store.register_execution(execution_id)
+        store.submit("execution-a", "consequence-x", self.consequence)
+        provider = RecordingAuthorityProvider(self._decision)
+        actuator = RecordingReleaseActuator(outcome)
+        boundary = ReleaseBoundary(store, provider, actuator, self.clock)
+        first = boundary.release("execution-a", "consequence-x")
+        return store, provider, actuator, boundary, first
+
+    def test_f12_t01_released_terminal_state_survives_execution_end(self) -> None:
+        (
+            store,
+            provider,
+            actuator,
+            boundary,
+            first,
+        ) = self._terminal_case(ActuatorOutcome.SUCCEEDED)
+
+        self.assertEqual(first.status, ReleaseState.RELEASED)
+        self.assertEqual(store.release_state("consequence-x"), ReleaseState.RELEASED)
+        self.assertEqual(
+            store._consequences["consequence-x"].current_execution_id,
+            "execution-a",
+        )
+
+        store.end_execution("execution-a")
+
+        self.assertEqual(store._executions["execution-a"], ExecutionState.ENDED)
+        self.assertEqual(store.release_state("consequence-x"), ReleaseState.RELEASED)
+        self.assertEqual(
+            store._consequences["consequence-x"].current_execution_id,
+            "execution-a",
+        )
+        with self.assertRaises(ValueError):
+            store.adopt("execution-b", "consequence-x")
+        with self.assertRaises(ValueError):
+            store.transfer("execution-b", "execution-c", "consequence-x")
+
+        provider_calls = len(provider.calls)
+        actuator_calls = len(actuator.calls)
+        second = boundary.release("execution-b", "consequence-x")
+
+        self.assertEqual(second.reason, "consequence_not_releasable")
+        self.assertEqual(len(provider.calls), provider_calls)
+        self.assertEqual(len(actuator.calls), actuator_calls)
+        self.assertEqual(store.release_state("consequence-x"), ReleaseState.RELEASED)
+        self.assertEqual(
+            store._consequences["consequence-x"].current_execution_id,
+            "execution-a",
+        )
+
+    def test_f12_t02_uncertain_terminal_state_survives_execution_end(self) -> None:
+        (
+            store,
+            provider,
+            actuator,
+            boundary,
+            first,
+        ) = self._terminal_case(ActuatorOutcome.UNCERTAIN)
+
+        self.assertEqual(first.status, ReleaseState.UNCERTAIN)
+        self.assertEqual(store.release_state("consequence-x"), ReleaseState.UNCERTAIN)
+        self.assertEqual(
+            store._consequences["consequence-x"].current_execution_id,
+            "execution-a",
+        )
+
+        store.end_execution("execution-a")
+
+        self.assertEqual(store._executions["execution-a"], ExecutionState.ENDED)
+        self.assertEqual(store.release_state("consequence-x"), ReleaseState.UNCERTAIN)
+        self.assertEqual(
+            store._consequences["consequence-x"].current_execution_id,
+            "execution-a",
+        )
+        with self.assertRaises(ValueError):
+            store.adopt("execution-b", "consequence-x")
+        with self.assertRaises(ValueError):
+            store.transfer("execution-b", "execution-c", "consequence-x")
+
+        provider_calls = len(provider.calls)
+        actuator_calls = len(actuator.calls)
+        second = boundary.release("execution-b", "consequence-x")
+
+        self.assertEqual(second.reason, "consequence_not_releasable")
+        self.assertEqual(len(provider.calls), provider_calls)
+        self.assertEqual(len(actuator.calls), actuator_calls)
+        self.assertEqual(store.release_state("consequence-x"), ReleaseState.UNCERTAIN)
+        self.assertEqual(
+            store._consequences["consequence-x"].current_execution_id,
+            "execution-a",
+        )
+
+    def _material_release(
+        self,
+        stored_payload: object,
+        bound_payload: object,
+    ):
+        store = ExecutionScopedConsequenceStore()
+        store.register_execution("execution-a")
+        store.submit(
+            "execution-a",
+            "consequence-x",
+            ProposedConsequence("synthetic_task", "target-x", stored_payload),
+        )
+        provider = RecordingAuthorityProvider(
+            lambda consequence, evaluated_at: self._decision(
+                consequence,
+                evaluated_at,
+                bound_payload,
+            )
+        )
+        actuator = RecordingReleaseActuator(ActuatorOutcome.SUCCEEDED)
+        boundary = ReleaseBoundary(store, provider, actuator, self.clock)
+        result = boundary.release("execution-a", "consequence-x")
+        return store, actuator, result
+
+    def test_f12_t03_canonical_material_equality_is_type_strict_and_ordered(self) -> None:
+        mismatches = (
+            ("bool versus int", True, 1),
+            ("int versus float", 1, 1.0),
+            ("sequence order", [1, 2], [2, 1]),
+        )
+        for label, stored_payload, bound_payload in mismatches:
+            with self.subTest(label=label):
+                store, actuator, result = self._material_release(
+                    stored_payload,
+                    bound_payload,
+                )
+                self.assertEqual(result.reason, "authority_material_mismatch")
+                self.assertEqual(result.status, ReleaseState.CONTAINED)
+                self.assertEqual(actuator.calls, [])
+                self.assertEqual(
+                    store.release_state("consequence-x"),
+                    ReleaseState.CONTAINED,
+                )
+
+        store, actuator, result = self._material_release(
+            {"first": 1, "second": {"nested": True}},
+            {"second": {"nested": True}, "first": 1},
+        )
+        self.assertEqual(result.status, ReleaseState.RELEASED)
+        self.assertEqual(store.release_state("consequence-x"), ReleaseState.RELEASED)
+        self.assertEqual(len(actuator.calls), 1)
+
+    def test_f12_t04_normal_release_outcomes_clear_release_marker(self) -> None:
+        outcomes = (
+            (ActuatorOutcome.DEFINITE_NOT_EXECUTED, ReleaseState.CONTAINED),
+            (ActuatorOutcome.UNCERTAIN, ReleaseState.UNCERTAIN),
+        )
+        for outcome, expected_state in outcomes:
+            with self.subTest(outcome=outcome):
+                store = ExecutionScopedConsequenceStore()
+                store.register_execution("execution-a")
+                store.submit("execution-a", "consequence-x", self.consequence)
+                provider = RecordingAuthorityProvider(self._decision)
+                actuator = RecordingReleaseActuator(outcome)
+                boundary = ReleaseBoundary(store, provider, actuator, self.clock)
+
+                self.assertNotIn("consequence-x", store._release_in_progress)
+                result = boundary.release("execution-a", "consequence-x")
+
+                self.assertEqual(result.status, expected_state)
+                self.assertEqual(store.release_state("consequence-x"), expected_state)
+                self.assertNotIn("consequence-x", store._release_in_progress)
+
+
 class ExecutionScopedConsequenceContainmentRegressionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.store = ExecutionScopedConsequenceStore()
