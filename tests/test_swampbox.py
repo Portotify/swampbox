@@ -23,6 +23,7 @@ from reference.swampbox import (
     ContainedConsequence,
     ExecutionScopedConsequenceStore,
     ExecutionState,
+    MAX_MATERIAL_DEPTH,
     PersistedArtifact,
     ProposedConsequence,
     ActuatorOutcome,
@@ -678,6 +679,172 @@ class RecordingReleaseActuator:
     def actuate(self, consequence: ContainedConsequence) -> ActuatorOutcome | str:
         self.calls.append(consequence)
         return self.outcome
+
+
+def _nested_material(depth: int, shape: str, leaf: int = 1) -> object:
+    """Build an exact container-depth chain without test-side recursion."""
+    value: object = leaf
+    for level in range(depth):
+        if shape == "dict" or (shape == "mixed" and level % 2 == 0):
+            value = {"x": value}
+        else:
+            value = [value]
+    return value
+
+
+class BoundedStructuralMaterialTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.store = ExecutionScopedConsequenceStore()
+        self.store.register_execution("execution-a")
+        self.store.register_execution("execution-b")
+        self.clock = MutableClock(datetime(2026, 1, 1, 12, 0, 0))
+
+    def _submit(self, consequence_id: str, payload: object) -> ContainedConsequence:
+        return self.store.submit(
+            "execution-a",
+            consequence_id,
+            ProposedConsequence("synthetic_task", "target-x", payload),
+        )
+
+    def _release(
+        self, consequence_id: str, bound_payload: object
+    ) -> tuple[object, RecordingAuthorityProvider, RecordingReleaseActuator]:
+        def decision(
+            contained: ContainedConsequence, evaluated_at: datetime
+        ) -> AuthorityDecision:
+            return AuthorityDecision(
+                "decision-1",
+                AuthorityVerdict.ALLOW.value,
+                contained.consequence_id,
+                contained.current_execution_id,
+                ProposedConsequence(
+                    contained.consequence_type, contained.target, bound_payload
+                ),
+                evaluated_at,
+                evaluated_at + timedelta(minutes=5),
+            )
+
+        provider = RecordingAuthorityProvider(decision)
+        actuator = RecordingReleaseActuator(ActuatorOutcome.SUCCEEDED)
+        result = ReleaseBoundary(self.store, provider, actuator, clock=self.clock).release(
+            "execution-a", consequence_id
+        )
+        return result, provider, actuator
+
+    def test_scalar_and_first_container_depths_are_admitted(self) -> None:
+        self.assertEqual(MAX_MATERIAL_DEPTH, 16)
+        for index, payload in enumerate((1, [], {}, [1], {"x": 1})):
+            with self.subTest(index=index):
+                self.assertEqual(
+                    self._submit(f"base-{index}", payload).payload, payload
+                )
+
+    def test_exact_max_and_max_plus_one_for_dict_list_and_mixed(self) -> None:
+        for shape in ("dict", "list", "mixed"):
+            with self.subTest(shape=shape):
+                accepted = _nested_material(MAX_MATERIAL_DEPTH, shape)
+                contained = self._submit(f"accepted-{shape}", accepted)
+                self.assertEqual(contained.payload, accepted)
+                self.assertEqual(
+                    self.store.read("execution-a", f"accepted-{shape}").payload,
+                    accepted,
+                )
+
+                rejected_id = f"rejected-{shape}"
+                registry_before = self.store._executions.copy()
+                with self.assertRaisesRegex(
+                    ValueError,
+                    f"consequence payload exceeds maximum material depth {MAX_MATERIAL_DEPTH}",
+                ):
+                    self._submit(
+                        rejected_id,
+                        _nested_material(MAX_MATERIAL_DEPTH + 1, shape),
+                    )
+                self.assertEqual(self.store._executions, registry_before)
+                self.assertNotIn(rejected_id, self.store._consequences)
+                self.assertNotIn(rejected_id, self.store._release_states)
+                with self.assertRaises(KeyError):
+                    self.store.read("execution-a", rejected_id)
+                self.assertEqual(self._submit(rejected_id, 1).payload, 1)
+
+    def test_far_over_depth_is_value_error_before_storage(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError, f"maximum material depth {MAX_MATERIAL_DEPTH}"
+        ):
+            self._submit("far-over-depth", _nested_material(64, "mixed"))
+        self.assertNotIn("far-over-depth", self.store._consequences)
+
+    def test_exact_max_transfer_and_adoption_return_current_custody(self) -> None:
+        payload = _nested_material(MAX_MATERIAL_DEPTH, "mixed")
+        self._submit("transferred", payload)
+        transferred = self.store.transfer("execution-a", "execution-b", "transferred")
+        self.assertEqual(transferred.current_execution_id, "execution-b")
+        self.assertEqual(
+            self.store.read("execution-b", "transferred").current_execution_id,
+            "execution-b",
+        )
+
+        self._submit("adopted", payload)
+        self.store.end_execution("execution-a")
+        self.assertIsNone(self.store.inspect_quarantined("adopted").current_execution_id)
+        adopted = self.store.adopt("execution-b", "adopted")
+        self.assertEqual(adopted.current_execution_id, "execution-b")
+        self.assertEqual(
+            self.store.read("execution-b", "adopted").current_execution_id,
+            "execution-b",
+        )
+
+    def test_exact_max_matching_authority_releases_for_all_shapes(self) -> None:
+        for shape in ("dict", "list", "mixed"):
+            with self.subTest(shape=shape):
+                payload = _nested_material(MAX_MATERIAL_DEPTH, shape)
+                self._submit(f"release-{shape}", payload)
+                result, provider, actuator = self._release(
+                    f"release-{shape}", _nested_material(MAX_MATERIAL_DEPTH, shape)
+                )
+                self.assertEqual(result.status, ReleaseState.RELEASED)
+                self.assertEqual(result.reason, "actuator_succeeded")
+                self.assertEqual(len(provider.calls), 1)
+                self.assertEqual(len(actuator.calls), 1)
+                self.assertNotIn(f"release-{shape}", self.store._release_in_progress)
+
+    def test_over_depth_authority_payload_is_invalid_before_comparison(self) -> None:
+        for shape in ("dict", "list", "mixed"):
+            with self.subTest(shape=shape):
+                consequence_id = f"invalid-authority-{shape}"
+                self._submit(consequence_id, {"x": 1})
+                result, provider, actuator = self._release(
+                    consequence_id,
+                    _nested_material(MAX_MATERIAL_DEPTH + 1, shape),
+                )
+                self.assertEqual(result.reason, "authority_invalid")
+                self.assertEqual(result.status, ReleaseState.CONTAINED)
+                self.assertEqual(len(provider.calls), 1)
+                self.assertEqual(len(actuator.calls), 0)
+                self.assertEqual(
+                    self.store.release_state(consequence_id), ReleaseState.CONTAINED
+                )
+                self.assertNotIn(consequence_id, self.store._release_in_progress)
+
+    def test_exact_max_deepest_leaf_mismatch_uses_normal_comparison(self) -> None:
+        self._submit("mismatch", _nested_material(MAX_MATERIAL_DEPTH, "mixed", 1))
+        result, provider, actuator = self._release(
+            "mismatch", _nested_material(MAX_MATERIAL_DEPTH, "mixed", 2)
+        )
+        self.assertEqual(result.reason, "authority_material_mismatch")
+        self.assertEqual(result.status, ReleaseState.CONTAINED)
+        self.assertEqual(len(provider.calls), 1)
+        self.assertEqual(len(actuator.calls), 0)
+
+    def test_shared_acyclic_reference_remains_detached(self) -> None:
+        child = {"x": 1}
+        payload = [child, child]
+        self._submit("shared", payload)
+        child["x"] = 2
+        self.assertEqual(
+            self.store.read("execution-a", "shared").payload,
+            [{"x": 1}, {"x": 1}],
+        )
 
 
 class RaisingReleaseActuator:

@@ -192,8 +192,20 @@ representations. Release admissibility does not compare serialized bytes,
 `repr` output, or JSON text, so mapping key order and the sign of a zero are not
 authority-bearing distinctions, even though a provider or actuator can observe
 them. Serialization does not define admissibility, and this project defines no
-canonical serialization. The canonical store's accepted payload values are
-unchanged by this definition.
+canonical serialization. This equality definition does not broaden the
+canonical store's accepted payload types.
+
+The public reference model separately bounds structural admissibility of
+`payload`: its maximum container depth is `MAX_MATERIAL_DEPTH = 16`. Scalar
+leaves have depth 0; the first list or dict has depth 1, and each nested list
+or dict adds one. Dict keys do not add depth. Cyclic containers are rejected;
+shared acyclic references are allowed. Material beyond this bound is outside
+the supported domain: consequence submission raises `ValueError` before
+storage, while over-depth authority-decision material is treated as
+`authority_invalid` before material comparison or actuation. `target` and
+`consequence_type` are exact strings, not recursive material. This
+admissibility rule does not change material equality and does not bound total
+nodes, width, string length, or aggregate memory use.
 
 ## Why this problem matters
 

@@ -12,6 +12,9 @@ from typing import Any
 from typing import Callable, Protocol
 
 
+MAX_MATERIAL_DEPTH = 16
+
+
 @dataclass(frozen=True)
 class PersistedArtifact:
     artifact_id: str
@@ -345,37 +348,52 @@ def _validate_consequence_material(consequence: ProposedConsequence) -> None:
 
 
 def _validate_payload_value(value: Any, active_containers: set[int]) -> None:
-    value_type = type(value)
-    if value is None or value_type is bool or value_type is int:
-        return
-    if value_type is float:
-        if not math.isfinite(value):
-            raise ValueError("consequence payload float must be finite")
-        return
-    if value_type is str:
-        return
+    # Each frame holds a value, its parent's container depth, and (once entered)
+    # an iterator over its children. This keeps traversal independent of Python
+    # recursion depth and tracks only the active path for cycle detection.
+    pending: list[tuple[Any, int, Any]] = [(value, 0, None)]
+    try:
+        while pending:
+            current, parent_depth, children = pending[-1]
+            value_type = type(current)
+            if children is not None:
+                try:
+                    if value_type is dict:
+                        key, child = next(children)
+                        if type(key) is not str:
+                            raise TypeError("consequence payload dict keys must be exact str")
+                    else:
+                        child = next(children)
+                except StopIteration:
+                    active_containers.remove(id(current))
+                    pending.pop()
+                else:
+                    pending.append((child, parent_depth + 1, None))
+                continue
 
-    if value_type is list:
-        _validate_container_path(value, active_containers)
-        try:
-            for item in value:
-                _validate_payload_value(item, active_containers)
-        finally:
-            active_containers.remove(id(value))
-        return
-
-    if value_type is dict:
-        _validate_container_path(value, active_containers)
-        try:
-            for key, item in value.items():
-                if type(key) is not str:
-                    raise TypeError("consequence payload dict keys must be exact str")
-                _validate_payload_value(item, active_containers)
-        finally:
-            active_containers.remove(id(value))
-        return
-
-    raise TypeError("unsupported consequence payload value type")
+            if current is None or value_type is bool or value_type is int:
+                pending.pop()
+            elif value_type is float:
+                if not math.isfinite(current):
+                    raise ValueError("consequence payload float must be finite")
+                pending.pop()
+            elif value_type is str:
+                pending.pop()
+            elif value_type is list or value_type is dict:
+                _validate_container_path(current, active_containers)
+                if parent_depth + 1 > MAX_MATERIAL_DEPTH:
+                    raise ValueError(
+                        f"consequence payload exceeds maximum material depth {MAX_MATERIAL_DEPTH}"
+                    )
+                pending[-1] = (
+                    current,
+                    parent_depth,
+                    iter(current.items()) if value_type is dict else iter(current),
+                )
+            else:
+                raise TypeError("unsupported consequence payload value type")
+    finally:
+        active_containers.clear()
 
 
 def _validate_container_path(
