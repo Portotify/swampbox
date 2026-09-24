@@ -51,7 +51,9 @@ Both `declaration` and `proposed` require these top-level fields:
 Undeclared top-level fields are rejected. The allowed top-level fields are
 exactly `consequence_type`, `target`, and `payload`. The `payload` value is
 not recursively restricted by this wrapper, so nested application-specific
-keys remain allowed.
+keys remain allowed. The comparator semantics (below) are distinct from the
+accepted input domain: this wrapper's accepted payload values are not
+necessarily the same set as the canonical store's.
 
 ## Output
 
@@ -72,8 +74,12 @@ The structured result has exactly this shape:
 ```
 
 `MATERIAL_MATCH` means the three modeled material fields are equal under the
-existing exact comparator. `MATERIAL_MISMATCH` means at least one of those
-fields differs.
+same comparator the release boundary uses: type-strict structural value
+equality, defined in the README under
+[Material equality](../README.md#material-equality). Mapping key order is not
+material, `+0.0` and `-0.0` are the same value, and `1`, `1.0`, and `True` are
+different values. `MATERIAL_MISMATCH` means at least one of those fields
+differs.
 
 ## Non-authority boundary
 
@@ -85,7 +91,7 @@ consequence, or invoke an actuator.
 
 ## Determinism
 
-The same valid modeled inputs produce the same semantic comparison result.
+The same valid modeled inputs produce the same comparison result.
 The comparison is read-only and has no external side effect.
 
 ## Tool annotations

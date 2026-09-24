@@ -53,7 +53,8 @@ not supported.
 A contained consequence does not become released merely because it exists,
 matches material, or has a current custodian. The supported `ReleaseBoundary`
 path requires an external, provider-neutral authority decision bound to the
-consequence, current custodian, and exact modeled material. The boundary
+consequence, current custodian, and exact modeled material (defined under
+[Material equality](#material-equality)). The boundary
 rechecks custody, material, and finite authority freshness immediately before
 supported actuation. An `ALLOW` result alone is not actuator success.
 
@@ -70,6 +71,24 @@ This release path is an in-memory, cooperative reference model. It does not
 authenticate execution identities, provide durable crash reconciliation or
 distributed atomicity, guarantee exactly-once external effects, or enforce
 universal routing of every effect-capable path through SwampBox.
+
+## Material equality
+
+"Exact modeled material" means type-strict structural value equality of a
+consequence's `consequence_type`, `target`, and `payload`. Corresponding values
+must have the same type, so `1` does not match `1.0`, and `True` does not match
+`1`. Mappings compare by key and recursively compared value, not by key order.
+Sequences compare in order. Strings compare by exact value, with no Unicode
+normalization, case folding, or whitespace normalization. Floating-point `+0.0`
+and `-0.0` are the same material value.
+
+This is a strict comparator, not a fuzzy one, but it does not compare
+representations. Release admissibility does not compare serialized bytes,
+`repr` output, or JSON text, so mapping key order and the sign of a zero are not
+authority-bearing distinctions, even though a provider or actuator can observe
+them. Serialization does not define admissibility, and this project defines no
+canonical serialization. The canonical store's accepted payload values are
+unchanged by this definition.
 
 ## Why this problem matters
 
