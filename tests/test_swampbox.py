@@ -2993,5 +2993,142 @@ class AuthorityFinalTemporalCheckTests(unittest.TestCase):
         self.assertEqual(len(provider.calls), 1)
 
 
+class InterruptAfterAddMarkerSet(set):
+    """Test-only instrument: performs the real add, then raises once.
+
+    Models an interruption delivered right after marker membership has been
+    established. Hostile set replacement is not a production threat model; this
+    only makes the timing deterministic.
+    """
+
+    def __init__(self, signal: BaseException) -> None:
+        super().__init__()
+        self.signal = signal
+        self.armed = True
+
+    def add(self, value) -> None:
+        super().add(value)
+        if self.armed:
+            self.armed = False
+            raise self.signal
+
+
+class InterruptBeforeAddMarkerSet(InterruptAfterAddMarkerSet):
+    """Test-only instrument: raises once BEFORE membership is established."""
+
+    def add(self, value) -> None:
+        if self.armed:
+            self.armed = False
+            raise self.signal
+        super().add(value)
+
+
+class ReleaseMarkerCleanupOwnershipTests(unittest.TestCase):
+    """F-05: the in-progress marker is cleanup-owned from the moment it is set."""
+
+    MATERIAL = ProposedConsequence("synthetic_task", "target-x", {"title": "content-y"})
+
+    def setUp(self) -> None:
+        self.clock = MutableClock(datetime(2026, 1, 1, 12, 0, 0))
+
+    def _decision(self, contained: ContainedConsequence, evaluated_at: datetime):
+        return AuthorityDecision(
+            decision_id="decision-f05",
+            verdict=AuthorityVerdict.ALLOW.value,
+            consequence_id=contained.consequence_id,
+            execution_id=contained.current_execution_id,
+            bound_consequence=ProposedConsequence(
+                contained.consequence_type, contained.target, contained.payload
+            ),
+            issued_at=evaluated_at,
+            valid_until=evaluated_at + timedelta(minutes=5),
+        )
+
+    def _world(self, marker_set, actuator):
+        store = ExecutionScopedConsequenceStore()
+        store.register_execution("execution-a")
+        store.submit("execution-a", "consequence-x", self.MATERIAL)
+        store._release_in_progress = marker_set
+        provider = RecordingAuthorityProvider(self._decision)
+        boundary = ReleaseBoundary(store, provider, actuator, self.clock)
+        return store, provider, boundary
+
+    def test_interruption_after_marker_establishment_leaves_no_stale_marker(self) -> None:
+        signals = {
+            "KeyboardInterrupt": KeyboardInterrupt,
+            "SystemExit": SystemExit,
+            "GeneratorExit": GeneratorExit,
+            "CancelledError": asyncio.CancelledError,
+            "CustomBaseException": CustomBaseException,
+            "ordinary Exception": lambda: RuntimeError("interrupted"),
+        }
+        for name, make in signals.items():
+            with self.subTest(signal=name):
+                signal = make()
+                markers = InterruptAfterAddMarkerSet(signal)
+                actuator = CountingReleaseActuator(result=ActuatorOutcome.SUCCEEDED)
+                store, provider, boundary = self._world(markers, actuator)
+
+                with self.assertRaises(type(signal)) as caught:
+                    boundary.release("execution-a", "consequence-x")
+
+                # The marker must not outlive the interrupted release.
+                self.assertNotIn("consequence-x", store._release_in_progress)
+                self.assertIs(caught.exception, signal)
+                self.assertEqual(
+                    store.release_state("consequence-x"), ReleaseState.CONTAINED
+                )
+                self.assertEqual(len(provider.calls), 1)
+                self.assertEqual(actuator.effects, 0)
+
+                # A normal later release proceeds; the marker was never cleared by hand.
+                second = boundary.release("execution-a", "consequence-x")
+
+                self.assertEqual(second.status, ReleaseState.RELEASED)
+                self.assertEqual(second.reason, "actuator_succeeded")
+                self.assertEqual(len(provider.calls), 2)
+                self.assertEqual(actuator.effects, 1)
+                self.assertEqual(
+                    store.release_state("consequence-x"), ReleaseState.RELEASED
+                )
+                self.assertNotIn("consequence-x", store._release_in_progress)
+
+    def test_interrupted_release_does_not_block_the_custodian_lifecycle(self) -> None:
+        signal = KeyboardInterrupt()
+        markers = InterruptAfterAddMarkerSet(signal)
+        actuator = CountingReleaseActuator(result=ActuatorOutcome.SUCCEEDED)
+        store, provider, boundary = self._world(markers, actuator)
+        store.register_execution("execution-b")
+
+        with self.assertRaises(KeyboardInterrupt):
+            boundary.release("execution-a", "consequence-x")
+
+        moved = store.transfer("execution-a", "execution-b", "consequence-x")
+        store.end_execution("execution-a")
+
+        self.assertEqual(moved.current_execution_id, "execution-b")
+        self.assertEqual(actuator.effects, 0)
+
+    def test_interruption_before_marker_establishment_is_also_clean(self) -> None:
+        signal = KeyboardInterrupt()
+        markers = InterruptBeforeAddMarkerSet(signal)
+        actuator = CountingReleaseActuator(result=ActuatorOutcome.SUCCEEDED)
+        store, provider, boundary = self._world(markers, actuator)
+
+        with self.assertRaises(KeyboardInterrupt) as caught:
+            boundary.release("execution-a", "consequence-x")
+
+        self.assertIs(caught.exception, signal)
+        self.assertNotIn("consequence-x", store._release_in_progress)
+        self.assertEqual(store.release_state("consequence-x"), ReleaseState.CONTAINED)
+        self.assertEqual(len(provider.calls), 1)
+        self.assertEqual(actuator.effects, 0)
+
+        second = boundary.release("execution-a", "consequence-x")
+
+        self.assertEqual(second.status, ReleaseState.RELEASED)
+        self.assertEqual(actuator.effects, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

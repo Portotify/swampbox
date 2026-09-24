@@ -525,10 +525,14 @@ class ReleaseBoundary:
                     decision_id=_decision_id_or_none(decision),
                 )
 
-            self._store._release_in_progress.add(consequence_id)
             actuation_entered = False
             not_executed_established = False
             try:
+                # Marker establishment is cleanup-owned: the finally below
+                # discards it on every exit, including an interruption right
+                # after the add. Under this lock hold the marker is absent
+                # beforehand, so discarding it when the add never ran is a no-op.
+                self._store._release_in_progress.add(consequence_id)
                 actuator_input = _copy_contained_consequence(current)
                 # Same decision, checked again at the edge of actuation: the
                 # earlier check precedes the material comparison and copies.
