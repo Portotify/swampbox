@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from dataclasses import replace
@@ -28,6 +29,7 @@ from reference.swampbox import (
     AuthorityVerdict,
     ReleaseBoundary,
     ReleaseState,
+    _copy_contained_consequence,
     same_material_consequence,
 )
 
@@ -564,6 +566,47 @@ class RaisingReleaseActuator:
         raise RuntimeError("external response lost")
 
 
+class CustomBaseException(BaseException):
+    pass
+
+
+class CountingReleaseActuator:
+    """Counts external effects, then raises or returns as configured."""
+
+    def __init__(self, result=None, raises: BaseException | None = None) -> None:
+        self.result = result
+        self.raises = raises
+        self.effects = 0
+
+    def actuate(self, consequence: ContainedConsequence):
+        self.effects += 1
+        if self.raises is not None:
+            raise self.raises
+        return self.result
+
+
+def _hash_raising_outcome(error: BaseException) -> str:
+    class HashRaisingOutcome(str):
+        def __hash__(self) -> int:
+            raise error
+
+    return HashRaisingOutcome("SUCCEEDED")
+
+
+class _InterruptingReleaseStates(dict):
+    """Test-only state map that fails while committing one target state."""
+
+    def __init__(self, states, interrupted_state, signal: BaseException) -> None:
+        super().__init__(states)
+        self._interrupted_state = interrupted_state
+        self._signal = signal
+
+    def __setitem__(self, key, value) -> None:
+        if value is self._interrupted_state:
+            raise self._signal
+        super().__setitem__(key, value)
+
+
 class ReleaseBoundaryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.store = ExecutionScopedConsequenceStore()
@@ -936,6 +979,132 @@ class ReleaseBoundaryTests(unittest.TestCase):
 
         self.assertEqual(result.status, ReleaseState.UNCERTAIN)
         self.assertEqual(result.reason, "actuator_outcome_uncertain")
+        self.assertEqual(self.store.release_state("consequence-x"), ReleaseState.UNCERTAIN)
+
+        second = boundary.release("execution-a", "consequence-x")
+
+        self.assertEqual(second.reason, "consequence_not_releasable")
+        self.assertEqual(len(provider.calls), 1)
+        self.assertEqual(len(actuator.calls), 1)
+
+    def _fresh_release(self, actuator):
+        store = ExecutionScopedConsequenceStore()
+        store.register_execution("execution-a")
+        store.submit("execution-a", "consequence-x", self.consequence)
+        provider = RecordingAuthorityProvider(self._decision)
+        boundary = ReleaseBoundary(store, provider, actuator, self.clock)
+        return store, provider, boundary
+
+    def _assert_uncertain_and_not_retried(self, store, provider, boundary, actuator):
+        self.assertEqual(store.release_state("consequence-x"), ReleaseState.UNCERTAIN)
+        self.assertNotIn("consequence-x", store._release_in_progress)
+
+        second = boundary.release("execution-a", "consequence-x")
+
+        self.assertEqual(second.reason, "consequence_not_releasable")
+        self.assertFalse(second.released)
+        self.assertEqual(store.release_state("consequence-x"), ReleaseState.UNCERTAIN)
+        self.assertEqual(len(provider.calls), 1)
+        self.assertEqual(actuator.effects, 1)
+
+    def test_post_actuation_base_exception_marks_uncertain_and_propagates(self) -> None:
+        signals = {
+            "KeyboardInterrupt": KeyboardInterrupt,
+            "SystemExit": SystemExit,
+            "GeneratorExit": GeneratorExit,
+            "CancelledError": asyncio.CancelledError,
+            "CustomBaseException": CustomBaseException,
+        }
+        for name, signal_type in signals.items():
+            with self.subTest(signal=name):
+                signal = signal_type()
+                actuator = CountingReleaseActuator(raises=signal)
+                store, provider, boundary = self._fresh_release(actuator)
+
+                with self.assertRaises(signal_type) as caught:
+                    boundary.release("execution-a", "consequence-x")
+
+                self.assertIs(caught.exception, signal)
+                self._assert_uncertain_and_not_retried(
+                    store, provider, boundary, actuator
+                )
+
+    def test_ordinary_normalization_exception_marks_uncertain_result(self) -> None:
+        actuator = CountingReleaseActuator(
+            result=_hash_raising_outcome(RuntimeError("normalization failed"))
+        )
+        store, provider, boundary = self._fresh_release(actuator)
+
+        result = boundary.release("execution-a", "consequence-x")
+
+        self.assertEqual(result.status, ReleaseState.UNCERTAIN)
+        self.assertEqual(result.reason, "actuator_outcome_uncertain")
+        self.assertFalse(result.released)
+        self._assert_uncertain_and_not_retried(store, provider, boundary, actuator)
+
+    def test_normalization_base_exception_marks_uncertain_and_propagates(self) -> None:
+        signal = KeyboardInterrupt()
+        actuator = CountingReleaseActuator(result=_hash_raising_outcome(signal))
+        store, provider, boundary = self._fresh_release(actuator)
+
+        with self.assertRaises(KeyboardInterrupt) as caught:
+            boundary.release("execution-a", "consequence-x")
+
+        self.assertIs(caught.exception, signal)
+        self._assert_uncertain_and_not_retried(store, provider, boundary, actuator)
+
+    def test_interrupted_released_commit_marks_uncertain_and_propagates(self) -> None:
+        signal = KeyboardInterrupt()
+        actuator = CountingReleaseActuator(result=ActuatorOutcome.SUCCEEDED)
+        store, provider, boundary = self._fresh_release(actuator)
+        store._release_states = _InterruptingReleaseStates(
+            store._release_states, ReleaseState.RELEASED, signal
+        )
+
+        with self.assertRaises(KeyboardInterrupt) as caught:
+            boundary.release("execution-a", "consequence-x")
+
+        self.assertIs(caught.exception, signal)
+        self._assert_uncertain_and_not_retried(store, provider, boundary, actuator)
+
+    def test_committed_released_is_not_downgraded_by_later_interruption(self) -> None:
+        actuator = CountingReleaseActuator(result=ActuatorOutcome.SUCCEEDED)
+        store, provider, boundary = self._fresh_release(actuator)
+        signal = KeyboardInterrupt()
+
+        with patch("reference.swampbox._decision_id_or_none", side_effect=signal):
+            with self.assertRaises(KeyboardInterrupt) as caught:
+                boundary.release("execution-a", "consequence-x")
+
+        self.assertIs(caught.exception, signal)
+        self.assertEqual(store.release_state("consequence-x"), ReleaseState.RELEASED)
+        self.assertNotIn("consequence-x", store._release_in_progress)
+        second = boundary.release("execution-a", "consequence-x")
+        self.assertEqual(second.reason, "consequence_not_releasable")
+        self.assertEqual(actuator.effects, 1)
+
+    def test_pre_actuation_copy_failure_remains_contained(self) -> None:
+        signal = KeyboardInterrupt()
+        actuator = CountingReleaseActuator(result=ActuatorOutcome.SUCCEEDED)
+        store, provider, boundary = self._fresh_release(actuator)
+        real_copy = _copy_contained_consequence
+        copies = []
+
+        def copy_or_fail(contained):
+            copies.append(contained)
+            if len(copies) == 2:  # 1: evaluation snapshot, 2: actuator input
+                raise signal
+            return real_copy(contained)
+
+        with patch("reference.swampbox._copy_contained_consequence", copy_or_fail):
+            with self.assertRaises(KeyboardInterrupt) as caught:
+                boundary.release("execution-a", "consequence-x")
+
+        self.assertIs(caught.exception, signal)
+        self.assertEqual(len(copies), 2)
+        self.assertEqual(actuator.effects, 0)
+        self.assertEqual(store.release_state("consequence-x"), ReleaseState.CONTAINED)
+        self.assertNotIn("consequence-x", store._release_in_progress)
 
     def test_released_consequence_cannot_be_released_twice(self) -> None:
         provider = RecordingAuthorityProvider(self._decision)

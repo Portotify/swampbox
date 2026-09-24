@@ -524,14 +524,20 @@ class ReleaseBoundary:
                 )
 
             self._store._release_in_progress.add(consequence_id)
+            actuation_entered = False
+            not_executed_established = False
             try:
                 actuator_input = _copy_contained_consequence(current)
+                actuation_entered = True
                 try:
                     raw_outcome = self._actuator.actuate(actuator_input)
                 except Exception:
                     raw_outcome = ActuatorOutcome.UNCERTAIN
 
-                outcome = _normalize_actuator_outcome(raw_outcome)
+                try:
+                    outcome = _normalize_actuator_outcome(raw_outcome)
+                except Exception:
+                    outcome = ActuatorOutcome.UNCERTAIN
                 if outcome is ActuatorOutcome.SUCCEEDED:
                     self._store._release_states[consequence_id] = ReleaseState.RELEASED
                     return ReleaseResult(
@@ -542,6 +548,7 @@ class ReleaseBoundary:
                         outcome,
                     )
                 if outcome is ActuatorOutcome.DEFINITE_NOT_EXECUTED:
+                    not_executed_established = True
                     return ReleaseResult(
                         consequence_id,
                         ReleaseState.CONTAINED,
@@ -558,6 +565,18 @@ class ReleaseBoundary:
                     _decision_id_or_none(decision),
                     ActuatorOutcome.UNCERTAIN,
                 )
+            except BaseException:
+                # Once actuation has been entered, an abnormal exit without a
+                # committed RELEASED or an established DEFINITE_NOT_EXECUTED
+                # must not leave the consequence releasable.
+                if (
+                    actuation_entered
+                    and not not_executed_established
+                    and self._store._release_states[consequence_id]
+                    is ReleaseState.CONTAINED
+                ):
+                    self._store._release_states[consequence_id] = ReleaseState.UNCERTAIN
+                raise
             finally:
                 self._store._release_in_progress.discard(consequence_id)
 
