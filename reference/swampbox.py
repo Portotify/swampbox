@@ -253,8 +253,9 @@ class ExecutionScopedConsequenceStore:
                 contained,
                 current_execution_id=target_execution_id,
             )
+            detached = _copy_contained_consequence(transferred)
             self._consequences[consequence_id] = transferred
-            return _copy_contained_consequence(transferred)
+            return detached
 
     def inspect_quarantined(self, consequence_id: str) -> ContainedConsequence:
         _validate_identifier(consequence_id, "consequence_id")
@@ -291,8 +292,9 @@ class ExecutionScopedConsequenceStore:
                 contained,
                 current_execution_id=execution_id,
             )
+            detached = _copy_contained_consequence(adopted)
             self._consequences[consequence_id] = adopted
-            return _copy_contained_consequence(adopted)
+            return detached
 
     def release_state(self, consequence_id: str) -> ReleaseState:
         _validate_identifier(consequence_id, "consequence_id")

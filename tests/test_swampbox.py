@@ -2227,6 +2227,70 @@ class ExecutionScopedConsequenceContainmentRegressionTests(unittest.TestCase):
         )
         self.assertEqual(submitted.payload, {"valid": True})
 
+    def test_failed_transfer_return_copy_does_not_commit_custody(self) -> None:
+        before = self._submit()
+        executions_before = dict(self.store._executions)
+        failure = RuntimeError("transfer return copy failed")
+
+        with patch(
+            "reference.swampbox._copy_contained_consequence", side_effect=failure
+        ):
+            with self.assertRaises(RuntimeError) as caught:
+                self.store.transfer("execution-a", "execution-b", "consequence-x")
+
+        self.assertIs(caught.exception, failure)
+        self.assertEqual(self.store._executions, executions_before)
+        self.assertEqual(
+            self.store.release_state("consequence-x"), ReleaseState.CONTAINED
+        )
+        self.assertEqual(self.store.read("execution-a", "consequence-x"), before)
+        with self.assertRaises(KeyError):
+            self.store.read("execution-b", "consequence-x")
+
+        self.store.submit("execution-b", "followup", self.consequence)
+        self.assertEqual(
+            self.store.read("execution-b", "followup").payload, before.payload
+        )
+
+    def test_failed_adopt_return_copy_leaves_consequence_quarantined(self) -> None:
+        self._submit()
+        self.store.end_execution("execution-a")
+        before = self.store.inspect_quarantined("consequence-x")
+        executions_before = dict(self.store._executions)
+        failure = RuntimeError("adopt return copy failed")
+
+        with patch(
+            "reference.swampbox._copy_contained_consequence", side_effect=failure
+        ):
+            with self.assertRaises(RuntimeError) as caught:
+                self.store.adopt("execution-b", "consequence-x")
+
+        self.assertIs(caught.exception, failure)
+        self.assertEqual(self.store._executions, executions_before)
+        self.assertEqual(
+            self.store.release_state("consequence-x"), ReleaseState.CONTAINED
+        )
+        self.assertEqual(self.store.inspect_quarantined("consequence-x"), before)
+        with self.assertRaises(KeyError):
+            self.store.read("execution-b", "consequence-x")
+
+        self.store.submit("execution-b", "followup", self.consequence)
+        self.assertEqual(
+            self.store.read("execution-b", "followup").payload, before.payload
+        )
+
+    def test_adopt_result_remains_detached_from_committed_custody(self) -> None:
+        self._submit()
+        self.store.end_execution("execution-a")
+
+        adopted = self.store.adopt("execution-b", "consequence-x")
+        self.assertEqual(adopted.current_execution_id, "execution-b")
+        adopted.payload["title"] = "changed"
+
+        stored = self.store.read("execution-b", "consequence-x")
+        self.assertEqual(stored.current_execution_id, "execution-b")
+        self.assertEqual(stored.payload, {"title": "content-y"})
+
 
 class IdentifierExactTypeBindingTests(unittest.TestCase):
     """F-01: boundary-critical identifiers must be exact built-in str."""
