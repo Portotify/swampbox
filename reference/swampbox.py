@@ -530,6 +530,16 @@ class ReleaseBoundary:
             not_executed_established = False
             try:
                 actuator_input = _copy_contained_consequence(current)
+                # Same decision, checked again at the edge of actuation: the
+                # earlier check precedes the material comparison and copies.
+                # This is not a second policy evaluation.
+                final_reason = _temporal_admissibility_reason(decision, self._clock())
+                if final_reason is not None:
+                    return self._contained_result(
+                        consequence_id,
+                        final_reason,
+                        decision_id=_decision_id_or_none(decision),
+                    )
                 actuation_entered = True
                 try:
                     raw_outcome = self._actuator.actuate(actuator_input)
@@ -621,23 +631,7 @@ class ReleaseBoundary:
             _proposed_from_contained(contained),
         ):
             return "authority_material_mismatch"
-        if (
-            type(decision.issued_at) is not datetime
-            or type(decision.valid_until) is not datetime
-        ):
-            return "authority_invalid_timestamp"
-        if type(now) is not datetime:
-            return "clock_invalid"
-        try:
-            if decision.valid_until <= decision.issued_at:
-                return "authority_invalid_timestamp"
-            if now < decision.issued_at:
-                return "authority_not_yet_valid"
-            if now >= decision.valid_until:
-                return "authority_expired"
-        except TypeError:
-            return "authority_invalid_timestamp"
-        return None
+        return _temporal_admissibility_reason(decision, now)
 
     @staticmethod
     def _contained_result(
@@ -651,6 +645,33 @@ class ReleaseBoundary:
             reason,
             decision_id,
         )
+
+
+def _temporal_admissibility_reason(decision: AuthorityDecision, now: object) -> str | None:
+    """Return why ``decision`` is not temporally admissible at ``now``, or None.
+
+    Valid iff ``issued_at <= now < valid_until``. This is a local check of the
+    already-returned decision; it neither re-evaluates policy nor detects any
+    authority change that is not represented in the decision's own timestamps.
+    """
+
+    if (
+        type(decision.issued_at) is not datetime
+        or type(decision.valid_until) is not datetime
+    ):
+        return "authority_invalid_timestamp"
+    if type(now) is not datetime:
+        return "clock_invalid"
+    try:
+        if decision.valid_until <= decision.issued_at:
+            return "authority_invalid_timestamp"
+        if now < decision.issued_at:
+            return "authority_not_yet_valid"
+        if now >= decision.valid_until:
+            return "authority_expired"
+    except TypeError:
+        return "authority_invalid_timestamp"
+    return None
 
 
 def _decision_id_or_none(decision: object) -> str | None:

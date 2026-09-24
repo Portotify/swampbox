@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from dataclasses import replace
@@ -2734,6 +2735,262 @@ class ActuatorOutcomeExactRecognitionTests(unittest.TestCase):
         self._assert_terminal_uncertain_after_first_release(
             store, provider, boundary, actuator, first
         )
+
+
+class ReadRecordingClock(MutableClock):
+    """MutableClock that records every value it returns."""
+
+    def __init__(self, value: datetime) -> None:
+        super().__init__(value)
+        self.reads: list[datetime] = []
+
+    def __call__(self) -> datetime:
+        self.reads.append(self.value)
+        return self.value
+
+
+class ClockStampedActuator:
+    """Counts entries and stamps the clock value seen at each entry."""
+
+    def __init__(self, clock: MutableClock, *outcomes) -> None:
+        self.clock = clock
+        self.outcomes = list(outcomes)
+        self.effects = 0
+        self.entry_times: list[datetime] = []
+
+    def actuate(self, consequence: ContainedConsequence):
+        self.effects += 1
+        self.entry_times.append(self.clock.value)
+        return self.outcomes.pop(0)
+
+
+class AuthorityFinalTemporalCheckTests(unittest.TestCase):
+    """F-02: the SAME decision is re-checked immediately before actuator entry.
+
+    This is a local temporal check of the returned decision. It is not a second
+    provider evaluation and does not detect external revocation.
+    """
+
+    MATERIAL = ProposedConsequence("synthetic_task", "target-x", {"title": "content-y"})
+    T0 = datetime(2026, 1, 1, 12, 0, 0)
+    TICK = timedelta(microseconds=1)
+
+    def setUp(self) -> None:
+        self.clock = ReadRecordingClock(self.T0)
+        self.decisions: list[AuthorityDecision] = []
+
+    def _factory(self, windows=(timedelta(minutes=5),), issued_offset=timedelta(0)):
+        def factory(contained: ContainedConsequence, evaluated_at: datetime):
+            window = windows[min(len(self.decisions), len(windows) - 1)]
+            issued = evaluated_at + issued_offset
+            decision = AuthorityDecision(
+                decision_id=f"decision-f02-{len(self.decisions)}",
+                verdict=AuthorityVerdict.ALLOW.value,
+                consequence_id=contained.consequence_id,
+                execution_id=contained.current_execution_id,
+                bound_consequence=ProposedConsequence(
+                    contained.consequence_type, contained.target, contained.payload
+                ),
+                issued_at=issued,
+                valid_until=issued + window,
+            )
+            self.decisions.append(decision)
+            return decision
+
+        return factory
+
+    def _world(self, actuator, factory):
+        store = ExecutionScopedConsequenceStore()
+        store.register_execution("execution-a")
+        store.submit("execution-a", "consequence-x", self.MATERIAL)
+        provider = RecordingAuthorityProvider(factory)
+        boundary = ReleaseBoundary(store, provider, actuator, self.clock)
+        return store, provider, boundary
+
+    @contextmanager
+    def _time_passes_during_preparation(self, new_value):
+        """Advance the clock while the boundary prepares the actuator input.
+
+        Uses the existing copy seam; no production hook. Copies inside
+        release(): 1 evaluation snapshot, 2 actuator input.
+        """
+
+        real_copy = _copy_contained_consequence
+        seen = {"n": 0}
+
+        def copy_then_advance(contained):
+            result = real_copy(contained)
+            seen["n"] += 1
+            if seen["n"] == 2:
+                self.clock.value = new_value
+            return result
+
+        with patch("reference.swampbox._copy_contained_consequence", copy_then_advance):
+            yield
+
+    # -- primary regression ---------------------------------------------------------
+
+    def test_authority_expiring_during_preparation_does_not_reach_actuator(self) -> None:
+        actuator = ClockStampedActuator(
+            self.clock, ActuatorOutcome.SUCCEEDED, ActuatorOutcome.SUCCEEDED
+        )
+        windows = (timedelta(seconds=60), timedelta(minutes=5))
+        store, provider, boundary = self._world(actuator, self._factory(windows))
+        first_valid_until = self.T0 + timedelta(seconds=60)
+
+        with self._time_passes_during_preparation(first_valid_until + timedelta(seconds=1)):
+            first = boundary.release("execution-a", "consequence-x")
+
+        # The security consequence first: expired authority must not actuate.
+        self.assertEqual(actuator.effects, 0)
+        self.assertEqual(len(provider.calls), 1)
+        self.assertEqual(first.status, ReleaseState.CONTAINED)
+        self.assertEqual(first.reason, "authority_expired")
+        self.assertIsNone(first.actuator_outcome)
+        self.assertEqual(first.authority_decision_id, "decision-f02-0")
+        self.assertEqual(store.release_state("consequence-x"), ReleaseState.CONTAINED)
+        self.assertNotIn("consequence-x", store._release_in_progress)
+        # initial check, then the final check (which refused); no third read.
+        self.assertEqual(len(self.clock.reads), 3)
+
+        # A NEW release attempt evaluates the provider again and may proceed.
+        second = boundary.release("execution-a", "consequence-x")
+
+        self.assertEqual(len(provider.calls), 2)
+        self.assertEqual(second.status, ReleaseState.RELEASED)
+        self.assertEqual(second.reason, "actuator_succeeded")
+        self.assertEqual(actuator.effects, 1)
+        fresh = self.decisions[1]
+        self.assertIsNot(fresh, self.decisions[0])
+        self.assertTrue(fresh.issued_at <= actuator.entry_times[0] < fresh.valid_until)
+
+    # -- exact boundaries at the final check ------------------------------------------
+
+    def test_final_check_preserves_valid_until_boundary(self) -> None:
+        valid_until = self.T0 + timedelta(seconds=60)
+        cases = {
+            "exactly valid_until is expired": (valid_until, 0, "authority_expired"),
+            "one tick before valid_until is valid": (valid_until - self.TICK, 1, "actuator_succeeded"),
+        }
+        for name, (final_time, entries, reason) in cases.items():
+            with self.subTest(case=name):
+                self.setUp()
+                actuator = ClockStampedActuator(self.clock, ActuatorOutcome.SUCCEEDED)
+                store, provider, boundary = self._world(
+                    actuator, self._factory((timedelta(seconds=60),))
+                )
+
+                with self._time_passes_during_preparation(final_time):
+                    result = boundary.release("execution-a", "consequence-x")
+
+                self.assertEqual(actuator.effects, entries)
+                self.assertEqual(result.reason, reason)
+                self.assertEqual(len(provider.calls), 1)
+
+    def test_final_check_preserves_issued_at_boundary(self) -> None:
+        cases = {
+            "clock before issued_at is not yet valid": (self.T0 - self.TICK, 0, "authority_not_yet_valid"),
+            "clock exactly at issued_at is valid": (self.T0, 1, "actuator_succeeded"),
+        }
+        for name, (final_time, entries, reason) in cases.items():
+            with self.subTest(case=name):
+                self.setUp()
+                actuator = ClockStampedActuator(self.clock, ActuatorOutcome.SUCCEEDED)
+                store, provider, boundary = self._world(actuator, self._factory())
+
+                with self._time_passes_during_preparation(final_time):
+                    result = boundary.release("execution-a", "consequence-x")
+
+                self.assertEqual(actuator.effects, entries)
+                self.assertEqual(result.reason, reason)
+                self.assertEqual(len(provider.calls), 1)
+
+    def test_invalid_clock_value_at_final_check_fails_closed(self) -> None:
+        actuator = ClockStampedActuator(self.clock, ActuatorOutcome.SUCCEEDED)
+        store, provider, boundary = self._world(actuator, self._factory())
+
+        with self._time_passes_during_preparation("not-a-datetime"):
+            result = boundary.release("execution-a", "consequence-x")
+
+        self.assertEqual(actuator.effects, 0)
+        self.assertEqual(result.reason, "clock_invalid")
+        self.assertEqual(store.release_state("consequence-x"), ReleaseState.CONTAINED)
+        self.assertNotIn("consequence-x", store._release_in_progress)
+
+    # -- initial validation is unchanged ------------------------------------------------
+
+    def test_initially_expired_decision_is_rejected_by_the_initial_check(self) -> None:
+        actuator = ClockStampedActuator(self.clock, ActuatorOutcome.SUCCEEDED)
+        factory = self._factory((timedelta(minutes=5),), issued_offset=-timedelta(minutes=10))
+        store, provider, boundary = self._world(actuator, factory)
+
+        result = boundary.release("execution-a", "consequence-x")
+
+        self.assertEqual(actuator.effects, 0)
+        self.assertEqual(result.reason, "authority_expired")
+        self.assertEqual(len(provider.calls), 1)
+        self.assertEqual(store.release_state("consequence-x"), ReleaseState.CONTAINED)
+        self.assertEqual(len(self.clock.reads), 2)  # the final check never ran
+
+    def test_initially_not_yet_valid_decision_is_rejected_by_the_initial_check(self) -> None:
+        actuator = ClockStampedActuator(self.clock, ActuatorOutcome.SUCCEEDED)
+        factory = self._factory(issued_offset=self.TICK)
+        store, provider, boundary = self._world(actuator, factory)
+
+        result = boundary.release("execution-a", "consequence-x")
+
+        self.assertEqual(actuator.effects, 0)
+        self.assertEqual(result.reason, "authority_not_yet_valid")
+        self.assertEqual(len(provider.calls), 1)
+        self.assertEqual(len(self.clock.reads), 2)
+
+    # -- same decision, not a re-evaluation; outcome semantics unchanged -------------
+
+    def test_successful_release_evaluates_once_and_reads_the_clock_three_times(self) -> None:
+        actuator = ClockStampedActuator(self.clock, ActuatorOutcome.SUCCEEDED)
+        store, provider, boundary = self._world(actuator, self._factory())
+
+        result = boundary.release("execution-a", "consequence-x")
+
+        self.assertEqual(result.status, ReleaseState.RELEASED)
+        self.assertEqual(result.reason, "actuator_succeeded")
+        self.assertEqual(len(provider.calls), 1)
+        self.assertEqual(actuator.effects, 1)
+        # evaluated_at, initial validation, final pre-actuation validation
+        self.assertEqual(len(self.clock.reads), 3)
+        self.assertEqual(len(self.decisions), 1)
+
+    def test_canonical_dne_and_uncertain_semantics_are_unchanged(self) -> None:
+        actuator = ClockStampedActuator(
+            self.clock, ActuatorOutcome.DEFINITE_NOT_EXECUTED, ActuatorOutcome.SUCCEEDED
+        )
+        store, provider, boundary = self._world(actuator, self._factory())
+
+        first = boundary.release("execution-a", "consequence-x")
+
+        self.assertEqual(first.status, ReleaseState.CONTAINED)
+        self.assertEqual(first.reason, "actuator_definitely_not_executed")
+        self.assertEqual(len(provider.calls), 1)
+
+        second = boundary.release("execution-a", "consequence-x")
+
+        self.assertEqual(second.status, ReleaseState.RELEASED)
+        self.assertEqual(actuator.effects, 2)
+        self.assertEqual(len(provider.calls), 2)
+
+        self.setUp()
+        uncertain = ClockStampedActuator(
+            self.clock, ActuatorOutcome.UNCERTAIN, ActuatorOutcome.SUCCEEDED
+        )
+        store, provider, boundary = self._world(uncertain, self._factory())
+
+        first = boundary.release("execution-a", "consequence-x")
+        second = boundary.release("execution-a", "consequence-x")
+
+        self.assertEqual(first.status, ReleaseState.UNCERTAIN)
+        self.assertEqual(second.reason, "consequence_not_releasable")
+        self.assertEqual(uncertain.effects, 1)
+        self.assertEqual(len(provider.calls), 1)
 
 
 if __name__ == "__main__":
