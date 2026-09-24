@@ -9,7 +9,8 @@ The current reference implementation demonstrates execution-scoped consequence
 containment, detached snapshots, explicit custody transfer, and a provider-
 neutral release boundary. Authority comes from an external provider. SwampBox
 binds that decision to the consequence and current custodian, checks material
-and finite freshness conditions, and passes the bound snapshot to an actuator.
+and the decision's finite validity window, and passes the bound snapshot to an
+actuator.
 
 This is about consequences surviving a process lifetime, not traditional
 sandbox escape.
@@ -44,9 +45,10 @@ but it is provenance metadata, not material effect identity. Persistence is
 not inheritance, adoption is not authority, and lineage is not authority.
 
 X's authority does not become C's authority. A derived consequence still
-requires its own fresh external authority decision before it can cross the
-supported release boundary. Multi-parent lineage and ancestry traversal are
-not supported.
+requires its own externally supplied authority decision, bound to that
+consequence and valid within its provider-defined window at release, before it
+can cross the supported release boundary. Multi-parent lineage and ancestry
+traversal are not supported.
 
 ## Supported release boundary
 
@@ -55,8 +57,23 @@ matches material, or has a current custodian. The supported `ReleaseBoundary`
 path requires an external, provider-neutral authority decision bound to the
 consequence, current custodian, and exact modeled material (defined under
 [Material equality](#material-equality)). The boundary
-rechecks custody, material, and finite authority freshness immediately before
-supported actuation. An `ALLOW` result alone is not actuator success.
+rechecks custody, material, and the decision's temporal validity immediately
+before supported actuation. An `ALLOW` result alone is not actuator success.
+
+In this reference implementation, freshness means temporal validity. The
+provider defines each decision's validity window, and the boundary requires that
+window to be well formed (`valid_until` after `issued_at`) and to contain the
+current time (`issued_at` at or before it, `valid_until` after it).
+`AuthorityProvider.evaluate` is called once per release attempt. The final
+check immediately before actuation applies the same test to the same returned
+decision against a later clock read, which catches a decision that expires
+between the first validation and the actuator call. It does not call the
+provider again or consult any revocation or policy source, so a change to the
+underlying authority inside an otherwise-valid window is not independently
+observed; observing such changes would need additional authority-protocol
+semantics that this reference does not define. Freshness here does not mean
+that a decision is recently issued, newly created, unique, one-shot, or unused,
+and `decision_id` is not a replay or idempotency key.
 
 The actuator reports the result of the supported attempt:
 
