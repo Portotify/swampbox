@@ -72,6 +72,28 @@ authenticate execution identities, provide durable crash reconciliation or
 distributed atomicity, guarantee exactly-once external effects, or enforce
 universal routing of every effect-capable path through SwampBox.
 
+Within one store instance, the reference store orders operations with a single
+in-process lock, and that lock is held through the final release critical
+section. Authority evaluation happens outside that section. The section covers
+revalidating state and custody, the final material and freshness checks, the
+actuator call, and committing the outcome, so conflicting store mutations
+cannot interleave with a checked effect attempt. The lock is not authority and
+does not replace the freshness check: authority still decides whether the
+effect may proceed, and the lock only keeps the same store's state from
+changing underneath that attempt.
+
+The cost is availability. A slow or blocked actuator can delay other
+operations on the same store instance, including reads and unrelated
+consequences, and `ReleaseBoundary` instances that share a store share this
+limit. Separate store instances are independent. The reference implementation
+imposes no actuator timeout, though an individual actuator may impose its own.
+Narrowing the lock is not a transparent optimization: it would need an explicit
+concurrency design that preserves state and custody stability, duplicate-release
+exclusion, authority freshness at the effect boundary, and post-actuation
+finality. The lock is in-process and in-memory only. It provides no
+multi-process or multi-host coordination, does not involve the external system,
+and does not provide exactly-once delivery.
+
 ## Material equality
 
 "Exact modeled material" means type-strict structural value equality of a
