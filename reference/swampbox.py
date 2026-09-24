@@ -320,7 +320,9 @@ class ExecutionScopedConsequenceStore:
 
 
 def _validate_identifier(value: str, field_name: str) -> None:
-    if not isinstance(value, str) or not value or value.strip() != value:
+    # Exact built-in str only: a str subclass may override __eq__/__hash__ and
+    # must be rejected before it reaches any lookup or comparison.
+    if not _is_exact_identifier(value):
         raise ValueError(f"{field_name} must be a non-empty identifier")
 
 

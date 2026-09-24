@@ -46,6 +46,41 @@ class CustomDatetime(datetime):
     pass
 
 
+class HostileIdentifier(str):
+    """Test-only str subclass: lying equality/inequality and a pinned hash.
+
+    ``alias`` is the string whose dict/set bucket the hash lands in. Every
+    hostile method records its use so tests can prove rejection happens before
+    any of them runs.
+    """
+
+    def __new__(cls, value: str, alias: str) -> "HostileIdentifier":
+        obj = super().__new__(cls, value)
+        obj.alias = alias
+        obj.calls: list[str] = []
+        return obj
+
+    def __eq__(self, other) -> bool:
+        self.calls.append("eq")
+        return True
+
+    def __ne__(self, other) -> bool:
+        self.calls.append("ne")
+        return False
+
+    def __hash__(self) -> int:
+        self.calls.append("hash")
+        return hash(self.alias)
+
+    def __len__(self) -> int:
+        self.calls.append("len")
+        return super().__len__()
+
+    def strip(self, *args) -> str:
+        self.calls.append("strip")
+        return super().strip(*args)
+
+
 class EqualitySpoof:
     def __eq__(self, other):
         return True
@@ -2097,6 +2132,311 @@ class ExecutionScopedConsequenceContainmentRegressionTests(unittest.TestCase):
             ProposedConsequence("synthetic_task", "target-x", {"valid": True}),
         )
         self.assertEqual(submitted.payload, {"valid": True})
+
+
+class IdentifierExactTypeBindingTests(unittest.TestCase):
+    """F-01: boundary-critical identifiers must be exact built-in str."""
+
+    MATERIAL = ProposedConsequence("synthetic_task", "target-x", {"title": "content-y"})
+
+    def setUp(self) -> None:
+        self.clock = MutableClock(datetime(2026, 1, 1, 12, 0, 0))
+
+    def _store(self) -> ExecutionScopedConsequenceStore:
+        store = ExecutionScopedConsequenceStore()
+        store.register_execution("execution-a")
+        store.register_execution("execution-b")
+        store.submit("execution-a", "consequence-x", self.MATERIAL)
+        return store
+
+    def _decision(
+        self,
+        contained: ContainedConsequence,
+        evaluated_at: datetime,
+        *,
+        decision_id="decision-f01",
+        consequence_id=None,
+        execution_id=None,
+    ) -> AuthorityDecision:
+        return AuthorityDecision(
+            decision_id=decision_id,
+            verdict=AuthorityVerdict.ALLOW.value,
+            consequence_id=(
+                contained.consequence_id if consequence_id is None else consequence_id
+            ),
+            execution_id=(
+                contained.current_execution_id if execution_id is None else execution_id
+            ),
+            bound_consequence=ProposedConsequence(
+                contained.consequence_type, contained.target, contained.payload
+            ),
+            issued_at=evaluated_at,
+            valid_until=evaluated_at + timedelta(minutes=5),
+        )
+
+    @staticmethod
+    def _snapshot(store: ExecutionScopedConsequenceStore):
+        return (
+            dict(store._executions),
+            dict(store._consequences),
+            dict(store._release_states),
+            set(store._release_in_progress),
+        )
+
+    def _assert_only_plain_str_keys(self, store) -> None:
+        for mapping in (store._executions, store._consequences, store._release_states):
+            for key in mapping:
+                self.assertIs(type(key), str)
+        for stored in store._consequences.values():
+            self.assertIs(type(stored.consequence_id), str)
+            self.assertIs(type(stored.origin_execution_id), str)
+            if stored.current_execution_id is not None:
+                self.assertIs(type(stored.current_execution_id), str)
+            if stored.parent_consequence_id is not None:
+                self.assertIs(type(stored.parent_consequence_id), str)
+
+    # -- positive control ---------------------------------------------------
+
+    def test_plain_str_identifiers_still_release_with_lineage(self) -> None:
+        store = self._store()
+        store.end_execution("execution-a")
+        store.adopt("execution-b", "consequence-x")
+        child = store.submit(
+            "execution-b",
+            "consequence-c",
+            ProposedConsequence(
+                "derived_task", "target-derived", {"n": 1},
+                parent_consequence_id="consequence-x",
+            ),
+        )
+        actuator = CountingReleaseActuator(result=ActuatorOutcome.SUCCEEDED)
+        provider = RecordingAuthorityProvider(self._decision)
+
+        result = ReleaseBoundary(store, provider, actuator, self.clock).release(
+            "execution-b", "consequence-c"
+        )
+
+        self.assertEqual(child.parent_consequence_id, "consequence-x")
+        self.assertEqual(result.status, ReleaseState.RELEASED)
+        self.assertEqual(result.reason, "actuator_succeeded")
+        self.assertEqual(actuator.effects, 1)
+        self._assert_only_plain_str_keys(store)
+
+    def test_existing_invalid_plain_values_still_fail_the_same_way(self) -> None:
+        store = self._store()
+        for bad in ("", " ", " padded", "padded ", None, 1, b"bytes"):
+            with self.subTest(value=bad):
+                with self.assertRaises(ValueError):
+                    store.register_execution(bad)
+                with self.assertRaises(ValueError):
+                    store.release_state(bad)
+
+    # -- ingress ------------------------------------------------------------
+
+    def test_every_public_identifier_parameter_rejects_hostile_subclass(self) -> None:
+        def execution() -> HostileIdentifier:
+            return HostileIdentifier("execution-a", alias="execution-a")
+
+        def consequence() -> HostileIdentifier:
+            return HostileIdentifier("consequence-x", alias="consequence-x")
+
+        child = lambda h: ProposedConsequence(
+            "derived_task", "target-derived", {"n": 1}, parent_consequence_id=h
+        )
+        cases = {
+            "register_execution.execution_id": (execution, lambda s, b, h: s.register_execution(h)),
+            "end_execution.execution_id": (execution, lambda s, b, h: s.end_execution(h)),
+            "submit.execution_id": (execution, lambda s, b, h: s.submit(h, "consequence-new", self.MATERIAL)),
+            "submit.consequence_id": (consequence, lambda s, b, h: s.submit("execution-a", h, self.MATERIAL)),
+            "submit.parent_consequence_id": (consequence, lambda s, b, h: s.submit("execution-a", "consequence-new", child(h))),
+            "read.execution_id": (execution, lambda s, b, h: s.read(h, "consequence-x")),
+            "read.consequence_id": (consequence, lambda s, b, h: s.read("execution-a", h)),
+            "transfer.source_execution_id": (execution, lambda s, b, h: s.transfer(h, "execution-b", "consequence-x")),
+            "transfer.target_execution_id": (execution, lambda s, b, h: s.transfer("execution-a", h, "consequence-x")),
+            "transfer.consequence_id": (consequence, lambda s, b, h: s.transfer("execution-a", "execution-b", h)),
+            "inspect_quarantined.consequence_id": (consequence, lambda s, b, h: s.inspect_quarantined(h)),
+            "adopt.execution_id": (execution, lambda s, b, h: s.adopt(h, "consequence-x")),
+            "adopt.consequence_id": (consequence, lambda s, b, h: s.adopt("execution-b", h)),
+            "release_state.consequence_id": (consequence, lambda s, b, h: s.release_state(h)),
+            "release.execution_id": (execution, lambda s, b, h: b.release(h, "consequence-x")),
+            "release.consequence_id": (consequence, lambda s, b, h: b.release("execution-a", h)),
+        }
+        for name, (make_hostile, operation) in cases.items():
+            with self.subTest(parameter=name):
+                store = self._store()
+                provider = RecordingAuthorityProvider(self._decision)
+                actuator = CountingReleaseActuator(result=ActuatorOutcome.SUCCEEDED)
+                boundary = ReleaseBoundary(store, provider, actuator, self.clock)
+                before = self._snapshot(store)
+                hostile = make_hostile()
+
+                with self.assertRaises(ValueError):
+                    operation(store, boundary, hostile)
+
+                self.assertEqual(hostile.calls, [])
+                self.assertEqual(self._snapshot(store), before)
+                self.assertEqual(provider.calls, [])
+                self.assertEqual(actuator.effects, 0)
+                self._assert_only_plain_str_keys(store)
+
+    # -- consequence binding (the 14A F-01 attack) ---------------------------
+
+    def _x_decision_captured_via_dne(self, store):
+        """Capture a decision bound to X; a DNE outcome keeps X releasable."""
+
+        captured = {}
+
+        def factory(contained, evaluated_at):
+            decision = self._decision(contained, evaluated_at, decision_id="decision-x")
+            captured["x"] = decision
+            return decision
+
+        actuator = CountingReleaseActuator(result=ActuatorOutcome.DEFINITE_NOT_EXECUTED)
+        ReleaseBoundary(
+            store, RecordingAuthorityProvider(factory), actuator, self.clock
+        ).release("execution-a", "consequence-x")
+        self.assertEqual(actuator.effects, 1)
+        return captured["x"], actuator
+
+    def test_plain_str_control_x_bound_authority_does_not_release_c(self) -> None:
+        store = self._store()
+        x_decision, actuator = self._x_decision_captured_via_dne(store)
+        store.submit("execution-a", "consequence-c", self.MATERIAL)
+        replay = RecordingAuthorityProvider(lambda contained, at: x_decision)
+
+        result = ReleaseBoundary(store, replay, actuator, self.clock).release(
+            "execution-a", "consequence-c"
+        )
+
+        self.assertEqual(result.reason, "authority_consequence_mismatch")
+        self.assertEqual(actuator.effects, 1)
+
+    def test_hostile_consequence_id_cannot_make_foreign_authority_reach_actuator(self) -> None:
+        store = self._store()
+        x_decision, actuator = self._x_decision_captured_via_dne(store)
+        entries_before = actuator.effects
+        hostile_c = HostileIdentifier("consequence-c", alias="consequence-c")
+        submit_rejected = False
+        try:
+            store.submit("execution-a", hostile_c, self.MATERIAL)
+        except ValueError:
+            submit_rejected = True
+        replay = RecordingAuthorityProvider(lambda contained, at: x_decision)
+        boundary = ReleaseBoundary(store, replay, actuator, self.clock)
+
+        try:
+            result = boundary.release("execution-a", "consequence-c")
+        except (KeyError, ValueError):
+            result = None
+
+        # The security consequence first: X's authority must never actuate C.
+        self.assertEqual(actuator.effects, entries_before)
+        self.assertTrue(result is None or not result.released)
+        self.assertTrue(submit_rejected)
+        self.assertEqual(hostile_c.calls, [])
+        with self.assertRaises(KeyError):
+            store.release_state("consequence-c")
+        self._assert_only_plain_str_keys(store)
+
+    # -- custodian binding ---------------------------------------------------
+
+    def test_plain_str_control_decision_for_other_custodian_does_not_release(self) -> None:
+        store = self._store()
+        provider = RecordingAuthorityProvider(
+            lambda contained, at: self._decision(contained, at, execution_id="execution-b")
+        )
+        actuator = CountingReleaseActuator(result=ActuatorOutcome.SUCCEEDED)
+
+        result = ReleaseBoundary(store, provider, actuator, self.clock).release(
+            "execution-a", "consequence-x"
+        )
+
+        self.assertEqual(result.reason, "authority_custodian_mismatch")
+        self.assertEqual(actuator.effects, 0)
+
+    def test_hostile_execution_id_cannot_defeat_custodian_binding(self) -> None:
+        store = self._store()
+        provider = RecordingAuthorityProvider(
+            lambda contained, at: self._decision(contained, at, execution_id="execution-b")
+        )
+        actuator = CountingReleaseActuator(result=ActuatorOutcome.SUCCEEDED)
+        boundary = ReleaseBoundary(store, provider, actuator, self.clock)
+        hostile_a = HostileIdentifier("execution-a", alias="execution-a")
+
+        try:
+            result = boundary.release(hostile_a, "consequence-x")
+        except (KeyError, ValueError):
+            result = None
+
+        self.assertEqual(actuator.effects, 0)
+        self.assertTrue(result is None or not result.released)
+        self.assertEqual(store.release_state("consequence-x"), ReleaseState.CONTAINED)
+        self.assertEqual(hostile_a.calls, [])
+
+    def test_hostile_execution_id_cannot_enter_the_store_as_custodian(self) -> None:
+        store = self._store()
+        hostile = HostileIdentifier("execution-h", alias="execution-b")
+        before = self._snapshot(store)
+
+        with self.assertRaises(ValueError):
+            store.register_execution(hostile)
+        with self.assertRaises(ValueError):
+            store.submit(hostile, "consequence-h", self.MATERIAL)
+
+        self.assertEqual(self._snapshot(store), before)
+        self.assertEqual(hostile.calls, [])
+        self._assert_only_plain_str_keys(store)
+
+    # -- parent lineage --------------------------------------------------------
+
+    def test_hostile_parent_id_cannot_become_stored_lineage(self) -> None:
+        store = self._store()
+        hostile_parent = HostileIdentifier("anything", alias="consequence-x")
+        before = self._snapshot(store)
+
+        with self.assertRaises(ValueError):
+            store.submit(
+                "execution-a",
+                "consequence-child",
+                ProposedConsequence(
+                    "derived_task", "target-derived", {"n": 1},
+                    parent_consequence_id=hostile_parent,
+                ),
+            )
+
+        with self.assertRaises(KeyError):
+            store.read("execution-a", "consequence-child")
+        self.assertEqual(self._snapshot(store), before)
+        self.assertEqual(hostile_parent.calls, [])
+        self._assert_only_plain_str_keys(store)
+
+    # -- provider-returned identifiers -----------------------------------------
+
+    def test_provider_returned_hostile_identifiers_fail_closed(self) -> None:
+        fields = {
+            "consequence_id": ("consequence-x", "consequence_id"),
+            "execution_id": ("execution-a", "execution_id"),
+            "decision_id": ("decision-f01", "decision_id"),
+        }
+        for name, (real_value, keyword) in fields.items():
+            with self.subTest(field=name):
+                store = self._store()
+                hostile = HostileIdentifier(real_value, alias=real_value)
+                provider = RecordingAuthorityProvider(
+                    lambda contained, at: self._decision(contained, at, **{keyword: hostile})
+                )
+                actuator = CountingReleaseActuator(result=ActuatorOutcome.SUCCEEDED)
+
+                result = ReleaseBoundary(store, provider, actuator, self.clock).release(
+                    "execution-a", "consequence-x"
+                )
+
+                self.assertEqual(actuator.effects, 0)
+                self.assertEqual(result.status, ReleaseState.CONTAINED)
+                self.assertEqual(result.reason, "authority_invalid")
+                self.assertEqual(store.release_state("consequence-x"), ReleaseState.CONTAINED)
+                self.assertEqual(len(provider.calls), 1)
+                self.assertEqual(hostile.calls, [])
 
 
 if __name__ == "__main__":
