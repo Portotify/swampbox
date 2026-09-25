@@ -1,8 +1,9 @@
 """Offline tests for the Step 13B-2B live harness.
 
 Nothing here touches GitHub, spawns a process, or arms a real write: git, the
-GitHub read runner, the write delegate, and gh resolution are all fakes, and
-the one test that exercises the real-delegate wiring patches subprocess.run.
+GitHub read runner, the write delegate, and gh resolution are all fakes. The
+lifecycle tests use a separate offline-only target configuration; the tracked
+public synthetic target is tested separately for delegate-independent closure.
 """
 
 from __future__ import annotations
@@ -33,6 +34,37 @@ FAKE_GH = os.path.abspath(os.path.join(os.sep, "offline-fake", "gh.exe"))
 SECRET = "ghp_TESTSECRET1234567890abcdef"
 C_ID = "consequence-C"
 X_ID = "consequence-X"
+
+
+_PUBLIC_TARGET_CONFIGURATION = {
+    "EXPECTED_LOGIN": live.EXPECTED_LOGIN,
+    "TARGET_REPOSITORY": live.TARGET_REPOSITORY,
+    "TARGET_REPOSITORY_ID": live.TARGET_REPOSITORY_ID,
+    "TARGET_NODE_ID": live.TARGET_NODE_ID,
+    "PUBLIC_TARGET_IS_SYNTHETIC": live.PUBLIC_TARGET_IS_SYNTHETIC,
+    "_ISSUE_URL_PREFIX": live._ISSUE_URL_PREFIX,
+}
+_OFFLINE_TARGET_CONFIGURATION = {
+    "EXPECTED_LOGIN": "offline-operator",
+    "TARGET_REPOSITORY": "offline.example.invalid/swampbox-effect-test",
+    "TARGET_REPOSITORY_ID": 987654321,
+    "TARGET_NODE_ID": "R_offline_target",
+    "PUBLIC_TARGET_IS_SYNTHETIC": False,
+    "_ISSUE_URL_PREFIX": (
+        "https://github.com/offline.example.invalid/swampbox-effect-test/issues/"
+    ),
+}
+_OFFLINE_TARGET_PATCHER = None
+
+
+def setUpModule() -> None:
+    global _OFFLINE_TARGET_PATCHER
+    _OFFLINE_TARGET_PATCHER = patch.multiple(live, **_OFFLINE_TARGET_CONFIGURATION)
+    _OFFLINE_TARGET_PATCHER.start()
+
+
+def tearDownModule() -> None:
+    _OFFLINE_TARGET_PATCHER.stop()
 
 
 def _url(number: int) -> str:
@@ -183,6 +215,32 @@ ARMED_ARGV = [
     "--expected-head",
     HEAD,
 ]
+
+
+class PublicSyntheticTargetGateTests(unittest.TestCase):
+    def test_live_synthetic_target_fails_before_injected_delegate(self) -> None:
+        with patch.multiple(live, **_PUBLIC_TARGET_CONFIGURATION):
+            env = Env()
+            result = live.execute(armed_gates(), env.deps())
+
+        self.assertEqual(result.exit_code, live.EXIT_GATE)
+        self.assertEqual(env.read_calls, [])
+        self.assertEqual(env.write_calls, [])
+        self.assertIn(
+            "LIVE TARGET CONFIGURATION REQUIRED: the public repository contains only a sanitized synthetic target",
+            result.lines,
+        )
+        self.assertIn("LIVE WRITE ATTEMPTED: NO", result.lines)
+
+    def test_live_synthetic_marker_ignores_target_spelling(self) -> None:
+        with patch.multiple(live, **_PUBLIC_TARGET_CONFIGURATION):
+            with patch.object(live, "TARGET_REPOSITORY", "another.synthetic.target"):
+                env = Env()
+                result = live.execute(armed_gates(), env.deps())
+
+        self.assertEqual(result.exit_code, live.EXIT_GATE)
+        self.assertEqual(env.read_calls, [])
+        self.assertEqual(env.write_calls, [])
 
 
 class DefaultSafetyTests(unittest.TestCase):

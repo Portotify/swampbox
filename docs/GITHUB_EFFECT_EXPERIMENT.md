@@ -154,11 +154,17 @@ agent systems safe.
 
 ### 3. Setup
 
+> Public target-specific identifiers in this historical record are sanitized
+> synthetic examples. The chronology, control flow, observed outcome classes,
+> and limitations are preserved; these substitutions are not new live-run
+> evidence.
+
 - Harness: `experiments/validation_13b_live.py` at commit
   `bc297d5e5293c49fb437cb4211bc7c1029e0672d`. It is experiment code, not a
   SwampBox capability. Its offline behavior is covered by
   `tests/test_validation_13b_live.py`.
-- Target: `Portotify/swampbox-effect-lab`, repository ID `1377745355`, private.
+- Target: `example-org/swampbox-effect-test`, repository ID `123456789`, a
+  sanitized public representation of the disposable private target.
   The canonical repository `Portotify/swampbox` was checked to be a different
   repository and was excluded as a target.
 - Effect: one GitHub issue creation through the experiment adapter
@@ -234,7 +240,7 @@ evaluation.
 ### 6. Live effect
 
 The pre-write plan printed by the harness named target
-`Portotify/swampbox-effect-lab`, target repository ID `1377745355`, the
+`example-org/swampbox-effect-test`, target repository ID `123456789`, the
 pinned login, the exact title, a budget of one POST attempt, and retry
 disabled. The run then produced one POST attempt. The adapter reported
 `SUCCEEDED` and the consequence state became `RELEASED`.
@@ -244,10 +250,11 @@ disabled. The run then produced one POST attempt. The adapter reported
 After the effect, the harness made a read-only GET for the returned issue
 number and compared number, URL, title, and repository. It reported `PASS`.
 
-During this documentation step, issue #3 was read once more with read-only
-GETs: state `open`, no comments, no labels, last-updated time equal to the
-creation time. Listing the target's issues showed exactly three: #1
-(historical, closed), #2 (historical, open), and #3. Nothing was changed.
+In the sanitized public representation, the recorded issue is shown as #42.
+The original documentation step read that issue once more with read-only GETs:
+state `open`, no comments, no labels, last-updated time equal to the creation
+time. Listing the target's issues showed exactly three: #1 (historical,
+closed), #2 (historical, open), and the sanitized #42. Nothing was changed.
 
 "Independent" here means a GitHub state read separate from the create response.
 It is not a third-party audit or cryptographic proof, and it does not
@@ -276,7 +283,7 @@ Reported by the harness run (self-reported by the process that performed it):
 
 Observed on GitHub:
 
-9. Issue #3 exists in the target repository with the title
+9. Sanitized issue #42 represents the target-repository issue with the title
    `[SwampBox 13B] canonical release 20260924T091934Z-b933fb` and the body
    `Controlled SwampBox Step 13B validation issue.` /
    `Disposable test repository. No production data.`, state `open`, created
@@ -351,8 +358,9 @@ requires a disposable target, an exact reviewed commit hash, and several
 independent explicit confirmations, and it allows one POST attempt. After an
 `UNCERTAIN` result the harness does not retry, and it does not clean up the
 created issue. This document deliberately gives no run command; read the
-harness source for the exact gates. Issue #3 is retained as evidence and should
-not be edited, commented on, or closed as part of this record.
+harness source for the exact gates. The sanitized issue reference is retained
+as evidence and should not be edited, commented on, or closed as part of this
+record.
 
 ### 12. Evidence identifiers
 
@@ -361,10 +369,10 @@ not be edited, commented on, or closed as part of this record.
 | Date | 2026-09-24 |
 | Harness commit | `bc297d5e5293c49fb437cb4211bc7c1029e0672d` |
 | Run ID | `20260924T091934Z-b933fb` |
-| Target | `Portotify/swampbox-effect-lab` |
-| Target repository ID | `1377745355` |
-| Issue | #3 |
-| Issue URL | https://github.com/Portotify/swampbox-effect-lab/issues/3 |
+| Target | `example-org/swampbox-effect-test` |
+| Target repository ID | `123456789` |
+| Issue | #42 |
+| Issue URL | https://github.com/example-org/swampbox-effect-test/issues/42 |
 | Issue title | `[SwampBox 13B] canonical release 20260924T091934Z-b933fb` |
 | Issue created at | `2026-09-24T09:19:40Z` |
 | X / C consequence IDs | `consequence-X` / `consequence-C` (C parent: `consequence-X`) |
@@ -383,7 +391,7 @@ not be edited, commented on, or closed as part of this record.
 | Execution lifetime and consequence lifetime were distinct in this experiment | SUPPORTED | A ended and X stayed quarantined in the lifecycle; custody moved only by explicit adoption. In-memory reference model. |
 | Lineage alone authorized release | NOT SUPPORTED — observed false in this experiment | X-bound and X-material decisions did not release C. One run, single-parent lineage only. |
 | Fresh C-bound authority was required by this experiment's release path | SUPPORTED | Only the C-bound decision reached the actuator. The authority provider was scripted in the harness. |
-| One real GitHub effect crossed the boundary | SUPPORTED | Issue #3 observed on GitHub. Causality rests on the run record and matching content. |
+| One real GitHub effect crossed the boundary | SUPPORTED | The sanitized record represents the observed issue effect. Causality rests on the run record and matching content. |
 | Second release caused another external write | OBSERVED FALSE | Refused with `consequence_not_releasable`; write attempts stayed 1. |
 | SwampBox was compared against a real sandbox | NOT TESTED | No sandbox runtime was involved. |
 | Temporal authority revocation was live-tested | NOT TESTED | No revocation or expiry was injected during the run. |

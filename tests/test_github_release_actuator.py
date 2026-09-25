@@ -31,7 +31,7 @@ from reference.swampbox import (
 )
 
 
-TARGET = "Portotify/swampbox-effect-lab"
+TARGET = "example-org/swampbox-effect-test"
 FAKE_GH = os.path.abspath(os.path.join(os.sep, "offline-fake", "gh.exe"))
 NOW = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -188,7 +188,7 @@ class ActuatorDefiniteNotExecutedTests(unittest.TestCase):
                 self._assert_dne(Consequence(consequence_type=bad))
 
     def test_target_mismatch(self) -> None:
-        for bad in ("Portotify/other", "portotify/swampbox-effect-lab", TARGET + "/", None):
+        for bad in ("example-org/other", "Example-org/swampbox-effect-test", TARGET + "/", None):
             with self.subTest(target=bad):
                 self._assert_dne(Consequence(target=bad))
 
@@ -298,8 +298,8 @@ class ActuatorUncertainTests(unittest.TestCase):
                 self._assert_uncertain(FakeRunner(stdout=json.dumps(payload)))
 
     def test_wrong_repository_url(self) -> None:
-        for repository in ("Portotify/other", "other/swampbox-effect-lab",
-                           "portotify/swampbox-effect-lab"):
+        for repository in ("example-org/other", "other/swampbox-effect-test",
+                           "Example-org/swampbox-effect-test"):
             with self.subTest(repository=repository):
                 stdout = json.dumps({"number": 7, "html_url": _url(7, repository)})
                 self._assert_uncertain(FakeRunner(stdout=stdout))

@@ -70,10 +70,11 @@ from reference.swampbox import (  # noqa: E402
 
 
 # ---- Pinned expectations (verified again at runtime, never assumed) -------
-EXPECTED_LOGIN = "mehmet-ayaz"
-TARGET_REPOSITORY = "Portotify/swampbox-effect-lab"
-TARGET_REPOSITORY_ID = 1377745355
-TARGET_NODE_ID = "R_kgDOUh65yw"
+EXPECTED_LOGIN = "synthetic-operator"
+TARGET_REPOSITORY = "example-org/swampbox-effect-test"
+TARGET_REPOSITORY_ID = 123456789
+TARGET_NODE_ID = "R_kgDOExampleTarget"
+PUBLIC_TARGET_IS_SYNTHETIC = True
 CANONICAL_REPOSITORY = "Portotify/swampbox"
 CANONICAL_REPOSITORY_ID = 1377727499
 CANONICAL_NODE_ID = "R_kgDOUh50Cw"
@@ -771,6 +772,16 @@ def execute(gates: Gates, deps: LiveDeps) -> RunResult:
         mode = "DRY"
 
     armed = mode == "LIVE"
+    if mode == "LIVE" and PUBLIC_TARGET_IS_SYNTHETIC:
+        return RunResult(
+            EXIT_GATE,
+            [
+                "LIVE TARGET CONFIGURATION REQUIRED: the public repository "
+                "contains only a sanitized synthetic target",
+                "LIVE WRITE ATTEMPTED: NO",
+            ],
+            facts,
+        )
     run_id = deps.run_id_factory()
     if type(run_id) is not str or not _RUN_ID_PATTERN.fullmatch(run_id):
         return RunResult(

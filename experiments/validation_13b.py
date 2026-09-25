@@ -47,7 +47,7 @@ from reference.swampbox import (  # noqa: E402
 )
 
 
-TARGET_REPOSITORY = "Portotify/swampbox-effect-lab"
+TARGET_REPOSITORY = "example-org/swampbox-effect-test"
 FAKE_GH_PATH = os.path.abspath(os.path.join(os.sep, "offline-fake", "gh.exe"))
 FIXED_NOW = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 AUTHORITY_VALIDITY = timedelta(minutes=5)
