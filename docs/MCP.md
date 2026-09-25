@@ -17,6 +17,12 @@ The server exposes exactly one application tool:
 
 `compare_consequence_binding`
 
+MCP is optional and is not required to use or test the reference SwampBox
+containment model. The minimum supported Python baseline for this repository is
+**Python 3.12 or newer**. Compatibility with newer Python releases remains
+subject to available test evidence; this does not claim that every newer
+release has been validated.
+
 ## Input
 
 The tool input has this shape:
@@ -174,10 +180,29 @@ This returns `MATERIAL_MISMATCH`. Neither example performs an external action.
 
 ## Testing
 
-Using the repository-local Python:
+All repository tests use Python's standard-library `unittest` runner. Using the
+repository-local Python, run the focused reference/core and MCP contract checks
+with:
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_swampbox.py"
-.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_mcp_server_contract.py"
+.\.venv\Scripts\python.exe -m unittest tests.test_swampbox -v
+.\.venv\Scripts\python.exe -m unittest tests.test_mcp_server_contract -v
 .\.venv\Scripts\python.exe -c "import mcp_server"
 ```
+
+The repository-wide test command is:
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+Repository-wide discovery includes `test_mcp_server_contract.py`, so install
+the optional MCP dependency from a fresh clone before running the complete
+suite:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-mcp.txt
+```
+
+The reference/core tests do not require the MCP dependency. The MCP-specific
+tests and server import do.

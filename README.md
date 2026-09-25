@@ -45,6 +45,35 @@ and recorded evidence. The existence of non-public work does not by itself
 establish any undocumented capability, guarantee, or resolution of a
 limitation documented here.
 
+## Prerequisites and test paths
+
+The minimum supported Python baseline is **Python 3.12 or newer**. Compatibility
+with newer Python releases remains subject to available test evidence; this
+baseline does not claim that every newer release has been validated.
+
+The reference implementation and non-MCP offline paths use the Python standard
+library. The optional MCP surface has its own pinned dependency file, described
+in [the MCP contract](docs/MCP.md).
+
+All repository tests use `unittest`. The reference/core test path is:
+
+```text
+python -m unittest tests.test_swampbox -v
+```
+
+The complete discovered suite is:
+
+```text
+python -m unittest discover -s tests -v
+```
+
+That complete suite also discovers the MCP contract tests, so install the
+optional MCP dependency before running it from a fresh clone:
+
+```text
+python -m pip install -r requirements-mcp.txt
+```
+
 ## Current reference implementation
 
 The in-memory consequence store provides execution-scoped visibility and
@@ -376,16 +405,24 @@ in their experiment documents.
 
 ## Run
 
-From this directory:
+All public tests use Python's standard-library `unittest` runner. From this
+directory, the reference/core test path is:
 
 ```text
 python -m unittest tests.test_swampbox -v
 ```
 
-The complete public offline suite is:
+The complete public suite is:
 
 ```text
 python -m unittest discover -s tests -v
+```
+
+The complete discovered suite includes the MCP contract tests. Install the
+optional MCP dependency first when using that command from a fresh clone:
+
+```text
+python -m pip install -r requirements-mcp.txt
 ```
 
 The live GitHub path is explicit and manual. Public documentation does not
