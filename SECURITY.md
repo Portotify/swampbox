@@ -4,6 +4,8 @@
 
 Please report suspected security vulnerabilities privately using GitHub's **Report a vulnerability** feature in the [SwampBox Security Advisories](https://github.com/Portotify/swampbox/security/advisories).
 
+If GitHub's private reporting feature is unavailable to you, contact [security@portotify.com](mailto:security@portotify.com) directly. Please do not use public issues for vulnerability details.
+
 Do not disclose exploit details, credentials, sensitive payloads, or personal information in public issues or discussions. Include a concise description, affected revision, reproduction steps, observed impact, and any relevant evidence that can be shared safely. Please avoid testing against systems you do not own or have permission to assess.
 
 Security reports will be reviewed on a best-effort basis. This project does not promise a particular response or remediation timeline.
@@ -17,6 +19,10 @@ The supported reference behavior, trust assumptions, and limitations are documen
 A finding that violates documented behavior or an explicit invariant within the supported reference path is relevant to this project. Limitations already disclosed in the README are not, by themselves, claims of a newly introduced vulnerability, though concrete evidence of additional risk is welcome.
 
 The public repository does not claim production-grade security or expose the project's non-public architecture. Please do not assume that unpublished components provide guarantees beyond those documented here.
+
+## General contact
+
+For non-security questions about SwampBox, contact [contact@portotify.com](mailto:contact@portotify.com).
 
 ## Supported versions
 
