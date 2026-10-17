@@ -1,5 +1,11 @@
 # SwampBox
 
+**Stopping an agent does not necessarily stop the consequences it has already set in motion.**
+
+A process can end while an artifact, delegated task, credential, or initiated external action persists. Process isolation can constrain the agent's runtime without independently establishing whether surviving consequences may be used or released later.
+
+**Process containment is not consequence containment.** SwampBox explores the latter by modeling custody, lineage, and a release boundary for specific effects under externally supplied authority. This public reference implementation does not claim to intercept every downstream effect, revoke third-party credentials, or undo completed actions.
+
 SwampBox is a provider-neutral reference model for containing modeled
 consequences, not a process sandbox. A process sandbox isolates running code;
 SwampBox models where a consequence may be visible and which execution holds
