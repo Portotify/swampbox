@@ -55,11 +55,16 @@ Both `declaration` and `proposed` require these top-level fields:
 - `payload` — modeled consequence data.
 
 Undeclared top-level fields are rejected. The allowed top-level fields are
-exactly `consequence_type`, `target`, and `payload`. The `payload` value is
-not recursively restricted by this wrapper, so nested application-specific
-keys remain allowed. The comparator semantics (below) are distinct from the
-accepted input domain: this wrapper's accepted payload values are not
-necessarily the same set as the canonical store's.
+exactly `consequence_type`, `target`, and `payload`. The payload accepts
+JSON-like scalar, list, and object values, including nested application-specific
+keys, subject to MCP resource bounds: at most 256 container levels and 10,000
+payload nodes per consequence. Cycles, non-string object keys, non-finite
+floating-point values, unsupported Python value types, and payloads beyond
+those bounds are rejected as invalid tool input before comparison. These are
+MCP-specific bounds and are intentionally broader than the canonical store's
+maximum material depth of 16; valid depth-17 through depth-256 MCP payloads
+remain supported. The comparator semantics (below) are distinct from the
+canonical store's accepted input domain.
 
 ## Output
 

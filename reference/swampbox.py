@@ -418,20 +418,31 @@ def _copy_contained_consequence(
 
 
 def _same_value(left: Any, right: Any) -> bool:
-    """Compare values without allowing bool/int coercion."""
+    """Compare values iteratively without allowing bool/int coercion."""
 
-    if type(left) is not type(right):
-        return False
-    if isinstance(left, dict):
-        return (
-            left.keys() == right.keys()
-            and all(_same_value(left[key], right[key]) for key in left)
-        )
-    if isinstance(left, (list, tuple)):
-        return len(left) == len(right) and all(
-            _same_value(a, b) for a, b in zip(left, right)
-        )
-    return left == right
+    pending: list[tuple[Any, Any]] = [(left, right)]
+    while pending:
+        current_left, current_right = pending.pop()
+        if type(current_left) is not type(current_right):
+            return False
+        if isinstance(current_left, dict):
+            if (
+                len(current_left) != len(current_right)
+                or current_left.keys() != current_right.keys()
+            ):
+                return False
+            pending.extend(
+                (current_left[key], current_right[key]) for key in current_left
+            )
+            continue
+        if isinstance(current_left, (list, tuple)):
+            if len(current_left) != len(current_right):
+                return False
+            pending.extend(zip(current_left, current_right))
+            continue
+        if current_left != current_right:
+            return False
+    return True
 
 
 def _same_consequence(
@@ -531,28 +542,47 @@ class ReleaseBoundary:
                     "custody_changed_before_release",
                 )
 
-            now = self._clock()
-            reason = self._validate_final_authority(
-                decision,
-                current,
-                execution_id,
-                now,
-            )
-            if reason is not None:
-                return self._contained_result(
-                    consequence_id,
-                    reason,
-                    decision_id=_decision_id_or_none(decision),
-                )
-
             actuation_entered = False
             not_executed_established = False
             try:
-                # Marker establishment is cleanup-owned: the finally below
-                # discards it on every exit, including an interruption right
-                # after the add. Under this lock hold the marker is absent
-                # beforehand, so discarding it when the add never ran is a no-op.
+                # Establish the marker before calling any injectable clock in
+                # this critical section. Re-entrant transfer, termination, and
+                # release attempts must observe the in-progress state.
+                # Cleanup remains ownership-safe even if add() or the callback
+                # raises a BaseException after membership is established.
                 self._store._release_in_progress.add(consequence_id)
+                now = self._clock()
+
+                # The callback is injectable and may attempt a state mutation.
+                # Re-read the canonical state before authority or actuation so
+                # the effect boundary never relies on the pre-callback snapshot.
+                current = self._store._consequences.get(consequence_id)
+                if current is None:
+                    return self._contained_result(consequence_id, "consequence_not_found")
+                if self._store._release_states[consequence_id] is not ReleaseState.CONTAINED:
+                    return self._contained_result(
+                        consequence_id,
+                        "consequence_not_releasable",
+                    )
+                if current.current_execution_id != execution_id:
+                    return self._contained_result(
+                        consequence_id,
+                        "custody_changed_before_release",
+                    )
+
+                reason = self._validate_final_authority(
+                    decision,
+                    current,
+                    execution_id,
+                    now,
+                )
+                if reason is not None:
+                    return self._contained_result(
+                        consequence_id,
+                        reason,
+                        decision_id=_decision_id_or_none(decision),
+                    )
+
                 actuator_input = _copy_contained_consequence(current)
                 # Same decision, checked again at the edge of actuation: the
                 # earlier check precedes the material comparison and copies.

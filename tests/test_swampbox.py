@@ -1674,6 +1674,130 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertEqual(len(provider.calls), 1)
         self.assertEqual(actuator.calls, 1)
 
+    def test_clock_callback_cannot_transfer_custody_during_release(self) -> None:
+        clock_calls = 0
+        transfer_errors: list[str] = []
+
+        def reentrant_clock() -> datetime:
+            nonlocal clock_calls
+            clock_calls += 1
+            if clock_calls == 2:
+                try:
+                    self.store.transfer(
+                        "execution-a", "execution-b", "consequence-x"
+                    )
+                except ValueError as error:
+                    transfer_errors.append(str(error))
+            return self.clock.value
+
+        provider = RecordingAuthorityProvider(self._decision)
+        actuator = CountingReleaseActuator(result=ActuatorOutcome.SUCCEEDED)
+        result = ReleaseBoundary(
+            self.store,
+            provider,
+            actuator,
+            clock=reentrant_clock,
+        ).release("execution-a", "consequence-x")
+
+        self.assertEqual(result.status, ReleaseState.RELEASED)
+        self.assertEqual(actuator.effects, 1)
+        self.assertEqual(
+            self.store._consequences["consequence-x"].current_execution_id,
+            "execution-a",
+        )
+        self.assertEqual(transfer_errors, ["consequence release is in progress"])
+        self.assertNotIn("consequence-x", self.store._release_in_progress)
+
+    def test_clock_callback_cannot_end_execution_during_release(self) -> None:
+        clock_calls = 0
+        end_errors: list[str] = []
+
+        def reentrant_clock() -> datetime:
+            nonlocal clock_calls
+            clock_calls += 1
+            if clock_calls == 2:
+                try:
+                    self.store.end_execution("execution-a")
+                except ValueError as error:
+                    end_errors.append(str(error))
+            return self.clock.value
+
+        provider = RecordingAuthorityProvider(self._decision)
+        actuator = CountingReleaseActuator(result=ActuatorOutcome.SUCCEEDED)
+        result = ReleaseBoundary(
+            self.store,
+            provider,
+            actuator,
+            clock=reentrant_clock,
+        ).release("execution-a", "consequence-x")
+
+        self.assertEqual(result.status, ReleaseState.RELEASED)
+        self.assertEqual(actuator.effects, 1)
+        self.assertEqual(
+            self.store._executions["execution-a"], ExecutionState.ACTIVE
+        )
+        self.assertEqual(end_errors, ["execution has a consequence release in progress"])
+        self.assertNotIn("consequence-x", self.store._release_in_progress)
+
+    def test_clock_callback_nested_release_is_store_blocked(self) -> None:
+        clock_calls = 0
+        holder: dict[str, ReleaseBoundary] = {}
+        nested_result = None
+
+        def reentrant_clock() -> datetime:
+            nonlocal clock_calls, nested_result
+            clock_calls += 1
+            if clock_calls == 2:
+                nested_result = holder["boundary"].release(
+                    "execution-a", "consequence-x"
+                )
+            return self.clock.value
+
+        provider = RecordingAuthorityProvider(self._decision)
+        actuator = CountingReleaseActuator(result=ActuatorOutcome.SUCCEEDED)
+        holder["boundary"] = ReleaseBoundary(
+            self.store,
+            provider,
+            actuator,
+            clock=reentrant_clock,
+        )
+        result = holder["boundary"].release("execution-a", "consequence-x")
+
+        self.assertEqual(result.status, ReleaseState.RELEASED)
+        self.assertIsNotNone(nested_result)
+        self.assertEqual(nested_result.reason, "release_in_progress")
+        self.assertEqual(actuator.effects, 1)
+        self.assertEqual(len(provider.calls), 1)
+        self.assertNotIn("consequence-x", self.store._release_in_progress)
+
+    def test_clock_callback_failure_cleans_release_marker(self) -> None:
+        clock_calls = 0
+
+        def failing_clock() -> datetime:
+            nonlocal clock_calls
+            clock_calls += 1
+            if clock_calls == 2:
+                raise RuntimeError("clock callback failed")
+            return self.clock.value
+
+        provider = RecordingAuthorityProvider(self._decision)
+        actuator = CountingReleaseActuator(result=ActuatorOutcome.SUCCEEDED)
+        boundary = ReleaseBoundary(
+            self.store,
+            provider,
+            actuator,
+            clock=failing_clock,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "clock callback failed"):
+            boundary.release("execution-a", "consequence-x")
+
+        self.assertEqual(actuator.effects, 0)
+        self.assertEqual(
+            self.store.release_state("consequence-x"), ReleaseState.CONTAINED
+        )
+        self.assertNotIn("consequence-x", self.store._release_in_progress)
+
     def test_actuator_mutation_does_not_change_canonical_material(self) -> None:
         provider = RecordingAuthorityProvider(self._decision)
 

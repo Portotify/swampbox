@@ -2,15 +2,73 @@
 
 from __future__ import annotations
 
+import math
 import os
 from typing import Any, Literal
 
 from mcp.server import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
-from pydantic import BaseModel, ConfigDict, Field, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
 
 from reference.swampbox import ProposedConsequence, same_material_consequence
+
+
+MCP_MAX_MATERIAL_DEPTH = 256
+MCP_MAX_MATERIAL_NODES = 10_000
+
+
+def _validate_mcp_payload(payload: Any) -> Any:
+    """Validate the bounded JSON-like payload domain without recursion."""
+
+    pending: list[tuple[Any, int, bool]] = [(payload, 0, False)]
+    active_containers: set[int] = set()
+    visited_nodes = 0
+
+    while pending:
+        value, parent_depth, exiting = pending.pop()
+        value_type = type(value)
+        if exiting:
+            active_containers.remove(id(value))
+            continue
+
+        visited_nodes += 1
+        if visited_nodes > MCP_MAX_MATERIAL_NODES:
+            raise ValueError(
+                f"payload exceeds MCP material node limit {MCP_MAX_MATERIAL_NODES}"
+            )
+
+        if value_type is dict or value_type is list:
+            container_depth = parent_depth + 1
+            if container_depth > MCP_MAX_MATERIAL_DEPTH:
+                raise ValueError(
+                    f"payload exceeds MCP material depth {MCP_MAX_MATERIAL_DEPTH}"
+                )
+            container_id = id(value)
+            if container_id in active_containers:
+                raise ValueError("payload contains a cycle")
+            active_containers.add(container_id)
+            pending.append((value, parent_depth, True))
+            if value_type is dict:
+                children = list(value.items())
+                for key, child in reversed(children):
+                    if type(key) is not str:
+                        raise ValueError("payload dictionary keys must be exact str")
+                    pending.append((child, container_depth, False))
+            else:
+                for child in reversed(value):
+                    pending.append((child, container_depth, False))
+            continue
+
+        if value is None or value_type is bool or value_type is int or value_type is str:
+            continue
+        if value_type is float:
+            if not math.isfinite(value):
+                raise ValueError("payload float values must be finite")
+            continue
+        raise TypeError("payload contains an unsupported value type")
+
+    return payload
 
 
 class ConsequenceInput(BaseModel):
@@ -27,6 +85,11 @@ class ConsequenceInput(BaseModel):
     payload: Any = Field(
         description="Application-specific material to compare. Do not include personal or sensitive personal data."
     )
+
+    @field_validator("payload")
+    @classmethod
+    def validate_payload(cls, payload: Any) -> Any:
+        return _validate_mcp_payload(payload)
 
 
 class ComparisonReceipt(BaseModel):

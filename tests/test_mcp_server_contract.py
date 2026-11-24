@@ -6,7 +6,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
 from mcp.server.transport_security import TransportSecurityMiddleware
 
 from mcp_server import (
@@ -47,6 +47,16 @@ def _arguments(
         "declaration": declaration or _consequence(),
         "proposed": proposed or _consequence(),
     }
+
+
+def _nested_payload(depth: int, *, shape: str = "list") -> object:
+    value: object = "leaf"
+    for level in range(depth):
+        if shape == "dict" or (shape == "mixed" and level % 2 == 0):
+            value = {"nested": value}
+        else:
+            value = [value]
+    return value
 
 
 def _load_server_settings_for_hosted_binding() -> dict[str, object]:
@@ -285,6 +295,77 @@ class MCPServerContractTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(result["result"], "MATERIAL_MATCH")
+
+    async def test_supported_deep_payloads_remain_material_matches(self) -> None:
+        for depth in (16, 17, 32, 256):
+            with self.subTest(depth=depth):
+                payload = _nested_payload(depth, shape="mixed")
+                result = await self.result_for(
+                    _arguments(
+                        declaration=_consequence(payload=payload),
+                        proposed=_consequence(payload=_nested_payload(depth, shape="mixed")),
+                    )
+                )
+                self.assertEqual(result["result"], "MATERIAL_MATCH")
+
+    async def test_excessive_depth_is_a_controlled_tool_error(self) -> None:
+        for depth in (257, 512):
+            with self.subTest(depth=depth):
+                payload = _nested_payload(depth)
+
+                with self.assertRaises(ToolError) as caught:
+                    await self.call_tool(
+                        _arguments(
+                            declaration=_consequence(payload=payload),
+                            proposed=_consequence(payload=_nested_payload(depth)),
+                        )
+                    )
+
+                self.assertNotIsInstance(caught.exception, UnexpectedToolError)
+
+    async def test_excessive_node_count_is_a_controlled_tool_error(self) -> None:
+        payload = list(range(10_001))
+
+        with self.assertRaises(ToolError) as caught:
+            await self.call_tool(
+                _arguments(
+                    declaration=_consequence(payload=payload),
+                    proposed=_consequence(payload=list(range(10_001))),
+                )
+            )
+
+        self.assertNotIsInstance(caught.exception, UnexpectedToolError)
+
+    async def test_cyclic_payload_is_a_controlled_tool_error(self) -> None:
+        payload: list[object] = []
+        payload.append(payload)
+
+        with self.assertRaises(ToolError) as caught:
+            await self.call_tool(
+                _arguments(
+                    declaration=_consequence(payload=payload),
+                    proposed=_consequence(payload=[]),
+                )
+            )
+
+        self.assertNotIsInstance(caught.exception, UnexpectedToolError)
+
+    async def test_payload_equality_remains_type_strict(self) -> None:
+        result = await self.result_for(
+            _arguments(
+                declaration=_consequence(payload=[1, 1.0, True]),
+                proposed=_consequence(payload=[1, 1.0, True]),
+            )
+        )
+        self.assertEqual(result["result"], "MATERIAL_MATCH")
+
+        mismatch = await self.result_for(
+            _arguments(
+                declaration=_consequence(payload=[1]),
+                proposed=_consequence(payload=[True]),
+            )
+        )
+        self.assertEqual(mismatch["result"], "MATERIAL_MISMATCH")
 
     async def test_missing_required_fields_fail_closed(self) -> None:
         for field in ("consequence_type", "target", "payload"):
